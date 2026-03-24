@@ -12,6 +12,7 @@ from app.models.project import (  # noqa: F401 - ensure models are registered
     ProjectMember, ActivityLog,
 )
 from app.routers.projects import router as projects_router
+from app.routers.docs import router as docs_router
 
 
 logger = logging.getLogger("projekty")
@@ -53,6 +54,7 @@ app.add_middleware(
 )
 
 app.include_router(projects_router, prefix="/api/v1")
+app.include_router(docs_router, prefix="/api/v1")
 
 
 @app.get("/api/health")

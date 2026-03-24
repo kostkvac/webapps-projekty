@@ -1,5 +1,9 @@
-import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
+import { useState, useEffect, useCallback } from 'react';
+import { ThemeProvider, createTheme, CssBaseline, Box, Tabs, Tab, Chip, Tooltip } from '@mui/material';
+import { Assignment, MenuBook, CloudDone, SyncProblem } from '@mui/icons-material';
 import ProjectsDashboard from './components/ProjectsDashboard';
+import DocsBrowser from './components/DocsBrowser';
+import { docsApi } from './api/projects';
 
 const theme = createTheme({
   palette: {
@@ -14,10 +18,100 @@ const theme = createTheme({
 });
 
 export default function App() {
+  const [tab, setTab] = useState(0);
+  const [docsRepos, setDocsRepos] = useState<string[]>([]);
+  const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
+  const [syncStatuses, setSyncStatuses] = useState<Record<string, boolean>>({});
+
+  const loadRepos = useCallback(async () => {
+    try {
+      const repos = await docsApi.listRepos();
+      setDocsRepos(repos);
+      const statuses: Record<string, boolean> = {};
+      for (const repo of repos) {
+        try {
+          const s = await docsApi.checkSync(repo);
+          statuses[repo] = s.is_synced;
+        } catch { /* skip */ }
+      }
+      setSyncStatuses(statuses);
+    } catch { /* skip */ }
+  }, []);
+
+  useEffect(() => { loadRepos(); }, [loadRepos]);
+
+  const allSynced = docsRepos.length === 0 || docsRepos.every(r => syncStatuses[r] !== false);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <ProjectsDashboard />
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 3, bgcolor: '#fff' }}>
+        <Tabs value={tab} onChange={(_, v) => { setTab(v); setSelectedRepo(null); }}>
+          <Tab icon={<Assignment fontSize="small" />} iconPosition="start" label="Projects" />
+          <Tab
+            icon={<MenuBook fontSize="small" />}
+            iconPosition="start"
+            label={
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                Docs
+                {docsRepos.length > 0 && (
+                  <Tooltip title={allSynced ? 'All repos synced' : 'Some repos out of sync'}>
+                    {allSynced
+                      ? <CloudDone sx={{ fontSize: 16, color: '#2e7d32' }} />
+                      : <SyncProblem sx={{ fontSize: 16, color: '#e65100' }} />
+                    }
+                  </Tooltip>
+                )}
+              </Box>
+            }
+          />
+        </Tabs>
+      </Box>
+      {tab === 0 && <ProjectsDashboard />}
+      {tab === 1 && (
+        <Box sx={{ px: 3, py: 2, maxWidth: 1600, mx: 'auto' }}>
+          {selectedRepo ? (
+            <DocsBrowser repo={selectedRepo} onBack={() => { setSelectedRepo(null); loadRepos(); }} />
+          ) : (
+            <Box>
+              <Box sx={{ mb: 3 }}>
+                <Box component="span" sx={{ typography: 'h4', fontWeight: 700, color: '#00472e' }}>Documentation</Box>
+              </Box>
+              {docsRepos.length === 0 ? (
+                <Box sx={{ p: 4, textAlign: 'center', bgcolor: '#fafafa', borderRadius: 2 }}>
+                  <Box component="span" sx={{ typography: 'body1', color: 'text.secondary' }}>No documentation repositories found in docs/</Box>
+                </Box>
+              ) : (
+                <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                  {docsRepos.map(repo => (
+                    <Box
+                      key={repo}
+                      onClick={() => setSelectedRepo(repo)}
+                      sx={{
+                        p: 3, borderRadius: 2, bgcolor: '#fff', border: '1px solid #e0e0e0',
+                        cursor: 'pointer', minWidth: 220, transition: 'all 0.2s',
+                        '&:hover': { transform: 'translateY(-2px)', boxShadow: 3, borderColor: '#007638' },
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                        <MenuBook sx={{ color: '#007638' }} />
+                        <Box component="span" sx={{ typography: 'h6', fontWeight: 700 }}>{repo}</Box>
+                      </Box>
+                      <Chip
+                        size="small"
+                        icon={syncStatuses[repo] !== false ? <CloudDone fontSize="small" /> : <SyncProblem fontSize="small" />}
+                        label={syncStatuses[repo] !== false ? 'Synced' : 'Out of sync'}
+                        color={syncStatuses[repo] !== false ? 'success' : 'warning'}
+                        variant="outlined"
+                      />
+                    </Box>
+                  ))}
+                </Box>
+              )}
+            </Box>
+          )}
+        </Box>
+      )}
     </ThemeProvider>
   );
 }

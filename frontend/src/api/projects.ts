@@ -217,4 +217,50 @@ export const projectsApi = {
   },
 };
 
+// ---- Docs API ----
+export interface DocFile {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}
+
+export interface DocContent {
+  path: string;
+  content: string;
+  filename: string;
+}
+
+export interface GitSyncStatus {
+  repo: string;
+  local_commit: string;
+  local_date: string;
+  remote_commit: string | null;
+  remote_date: string | null;
+  is_synced: boolean;
+  behind_count: number;
+}
+
+export const docsApi = {
+  listRepos: async (): Promise<string[]> => {
+    const r = await api.get<string[]>('/docs/repos');
+    return r.data;
+  },
+  listFiles: async (repo: string, subdir: string = ''): Promise<DocFile[]> => {
+    const r = await api.get<DocFile[]>(`/docs/${repo}/tree`, { params: { subdir } });
+    return r.data;
+  },
+  readFile: async (repo: string, path: string): Promise<DocContent> => {
+    const r = await api.get<DocContent>(`/docs/${repo}/file`, { params: { path } });
+    return r.data;
+  },
+  checkSync: async (repo: string): Promise<GitSyncStatus> => {
+    const r = await api.get<GitSyncStatus>(`/docs/${repo}/sync`);
+    return r.data;
+  },
+  pullRepo: async (repo: string): Promise<{ status: string; output: string }> => {
+    const r = await api.post<{ status: string; output: string }>(`/docs/${repo}/pull`);
+    return r.data;
+  },
+};
+
 export default projectsApi;

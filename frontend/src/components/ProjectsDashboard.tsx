@@ -12,7 +12,7 @@ import {
 import Grid from '@mui/material/Grid';
 import {
   Add, Edit, Delete, FolderOpen, Assignment,
-  Schedule, AccountCircle, Science,
+  Schedule, Science,
   ViewModule, ViewList, ViewStream,
   OpenInFull, CloseFullscreen,
   FilterList, PriorityHigh, Flag,
@@ -416,17 +416,11 @@ export default function ProjectsDashboard() {
           <Typography variant="body2" sx={{ fontWeight: 600, textDecoration: task.status === 'done' ? 'line-through' : 'none' }}>
             {task.title}
           </Typography>
-          {task.description && <Typography variant="caption" color="text.secondary" noWrap>{task.description}</Typography>}
+          {task.description && <Typography variant="caption" color="text.secondary" sx={{ display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{task.description}</Typography>}
         </Box>
         <Stack direction="row" spacing={0.5} alignItems="center">
           {statusChip(task.status, TASK_STATUS_CONFIG)}
           {priorityChip(task.priority)}
-          <Chip
-            label={task.assigned_to || 'Unassigned'}
-            size="small"
-            icon={<AccountCircle fontSize="small" />}
-            sx={{ bgcolor: task.assigned_to ? '#e8f5e9' : '#ffebee', color: task.assigned_to ? '#2e7d32' : '#c62828', fontSize: '0.7rem' }}
-          />
           {(task.comments?.length || 0) > 0 && (
             <Badge badgeContent={task.comments?.length} color="primary" sx={{ '& .MuiBadge-badge': { fontSize: '0.65rem' } }}>
               <Comment fontSize="small" color="action" />
@@ -466,7 +460,7 @@ export default function ProjectsDashboard() {
         <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>{task.title}</Typography>
         <Stack direction="row" spacing={0.5} flexWrap="wrap">
           {priorityChip(task.priority)}
-          {task.assigned_to && <Chip label={task.assigned_to} size="small" icon={<AccountCircle fontSize="small" />} sx={{ fontSize: '0.65rem' }} />}
+
           {task.story_points && <Chip label={`${task.story_points} SP`} size="small" variant="outlined" sx={{ fontSize: '0.65rem' }} />}
         </Stack>
       </CardContent>
@@ -892,7 +886,7 @@ export default function ProjectsDashboard() {
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <TextField label="Title" required fullWidth value={editingTask?.title || ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, title: e.target.value } : prev)} />
-            <TextField label="Description" multiline rows={3} fullWidth value={editingTask?.description || ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, description: e.target.value } : prev)} />
+            <TextField label="Description" multiline minRows={5} maxRows={20} fullWidth value={editingTask?.description || ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, description: e.target.value } : prev)} InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.85rem' } }} />
             <Stack direction="row" spacing={2}>
               <FormControl fullWidth size="small">
                 <InputLabel>Type</InputLabel>
@@ -917,10 +911,7 @@ export default function ProjectsDashboard() {
               <TextField label="Story Points" type="number" fullWidth value={editingTask?.story_points ?? ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, story_points: e.target.value ? parseInt(e.target.value) : null } : prev)} />
               <TextField label="Estimated Hours" type="number" fullWidth value={editingTask?.estimated_hours ?? ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, estimated_hours: e.target.value ? parseFloat(e.target.value) : null } : prev)} />
             </Stack>
-            <Stack direction="row" spacing={2}>
-              <TextField label="Assigned To" fullWidth value={editingTask?.assigned_to || ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, assigned_to: e.target.value || null } : prev)} />
-              <TextField label="Due Date" type="date" fullWidth InputLabelProps={{ shrink: true }} value={editingTask?.due_date || ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, due_date: e.target.value || null } : prev)} />
-            </Stack>
+            <TextField label="Due Date" type="date" fullWidth InputLabelProps={{ shrink: true }} value={editingTask?.due_date || ''} onChange={(e) => setEditingTask(prev => prev ? { ...prev, due_date: e.target.value || null } : prev)} />
 
             {/* --- Comments, Notes, Audit (only for existing tasks) --- */}
             {editingTask?.id && (

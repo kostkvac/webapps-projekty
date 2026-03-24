@@ -36,3 +36,4 @@ data/logs/
 .pytest_cache/
 .coverage
 htmlcov/
+docs/

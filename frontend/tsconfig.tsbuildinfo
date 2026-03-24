@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/api/projects.ts","./src/components/ProjectsDashboard.tsx"],"version":"5.7.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/api/projects.ts","./src/components/DocsBrowser.tsx","./src/components/ProjectsDashboard.tsx"],"version":"5.7.3"}
