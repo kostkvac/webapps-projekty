@@ -248,6 +248,9 @@ async def create_task(
         due_date=task_in.due_date,
         created_by=CURRENT_USER,
     )
+    if task_in.label_ids:
+        labels = db.query(Label).filter(Label.id.in_(task_in.label_ids)).all()
+        task.labels = labels
     db.add(task)
     db.flush()
     _log_activity(db, project_id, "task_created", "task", task.id)
@@ -463,6 +466,38 @@ async def delete_label(label_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Label not found")
     db.delete(label)
     db.commit()
+
+
+@router.post("/tasks/{task_id}/labels/{label_id}", response_model=TaskResponse)
+async def add_label_to_task(
+    task_id: int, label_id: int, db: Session = Depends(get_db)
+):
+    task = db.query(Task).options(joinedload(Task.labels)).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    label = db.query(Label).filter(Label.id == label_id).first()
+    if not label:
+        raise HTTPException(status_code=404, detail="Label not found")
+    if label not in task.labels:
+        task.labels.append(label)
+        db.commit()
+        db.refresh(task)
+    return task
+
+
+@router.delete("/tasks/{task_id}/labels/{label_id}", response_model=TaskResponse)
+async def remove_label_from_task(
+    task_id: int, label_id: int, db: Session = Depends(get_db)
+):
+    task = db.query(Task).options(joinedload(Task.labels)).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    label = db.query(Label).filter(Label.id == label_id).first()
+    if label and label in task.labels:
+        task.labels.remove(label)
+        db.commit()
+        db.refresh(task)
+    return task
 
 
 @router.post("/projects/{project_id}/labels/{label_id}", response_model=ProjectResponse)

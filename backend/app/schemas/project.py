@@ -79,6 +79,7 @@ class TaskCreate(BaseModel):
     sort_order: int = 0
     due_date: Optional[date] = None
     sprint_id: Optional[int] = None
+    label_ids: List[int] = []
 
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
