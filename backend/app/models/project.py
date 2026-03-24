@@ -101,8 +101,8 @@ class Task(Base):
     project = relationship("Project", back_populates="tasks")
     sprint = relationship("Sprint", back_populates="tasks")
     comments = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan")
-    notes = relationship("TaskNote", back_populates="task", cascade="all, delete-orphan")
-    audit_logs = relationship("TaskAudit", back_populates="task", cascade="all, delete-orphan")
+    notes = relationship("TaskNote", back_populates="task", cascade="all, delete-orphan", foreign_keys="[TaskNote.task_id]")
+    audit_logs = relationship("TaskAudit", back_populates="task", cascade="all, delete-orphan", foreign_keys="[TaskAudit.task_id]")
     labels = relationship("Label", secondary=task_labels, back_populates="tasks")
 
 

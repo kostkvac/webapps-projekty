@@ -1,0 +1,19 @@
+[Unit]
+Description=Projekty Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/webapps/projekty/backend
+ExecStart=/opt/webapps/finance/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8002 --workers 2
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONPATH=/opt/webapps
+EnvironmentFile=/opt/webapps/projekty/.env
+
+[Install]
+WantedBy=multi-user.target
