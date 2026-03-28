@@ -79,6 +79,7 @@ class TaskCreate(BaseModel):
     sort_order: int = 0
     due_date: Optional[date] = None
     sprint_id: Optional[int] = None
+    parent_task_id: Optional[int] = None
     label_ids: List[int] = []
 
 class TaskUpdate(BaseModel):
@@ -94,11 +95,13 @@ class TaskUpdate(BaseModel):
     sort_order: Optional[int] = None
     due_date: Optional[date] = None
     sprint_id: Optional[int] = None
+    parent_task_id: Optional[int] = None
 
 class TaskResponse(BaseModel):
     id: int
     project_id: int
     sprint_id: Optional[int] = None
+    parent_task_id: Optional[int] = None
     title: str
     description: Optional[str] = None
     task_type: str
@@ -117,6 +120,7 @@ class TaskResponse(BaseModel):
     labels: List[LabelResponse] = []
     notes: List[TaskNoteResponse] = []
     audit_logs: List[TaskAuditResponse] = []
+    subtasks: List['TaskResponse'] = []
     model_config = {"from_attributes": True}
 
 
@@ -164,6 +168,7 @@ class ProjectMemberResponse(BaseModel):
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
+    docs_repo: Optional[str] = None
     priority: str = Field(default="medium")
     status: str = Field(default="backlog")
     location: Optional[str] = None
@@ -174,6 +179,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    docs_repo: Optional[str] = None
     priority: Optional[str] = None
     status: Optional[str] = None
     location: Optional[str] = None
@@ -187,6 +193,7 @@ class ProjectResponse(BaseModel):
     name: str
     slug: str
     description: Optional[str] = None
+    docs_repo: Optional[str] = None
     status: str
     priority: str
     location: Optional[str] = None

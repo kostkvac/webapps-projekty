@@ -7,7 +7,7 @@ import {
   Paper, Stack, CircularProgress, Snackbar, Alert, Badge,
   Checkbox, OutlinedInput, ListItemText,
   ToggleButton, ToggleButtonGroup,
-  Divider, Switch, FormControlLabel, Tooltip,
+  Divider, Switch, FormControlLabel, Tooltip, Collapse,
 } from '@mui/material';
 import Grid from '@mui/material/Grid';
 import {
@@ -17,7 +17,7 @@ import {
   OpenInFull, CloseFullscreen,
   FilterList, PriorityHigh, Flag,
   PlayArrow, Pause, Done, Block,
-  Close,
+  Close, ExpandMore, ChevronRight, SubdirectoryArrowRight,
   BugReport, Lightbulb, NoteAlt, CheckCircle,
   Rocket, History, StickyNote2, Comment,
   ArrowForward,
@@ -109,6 +109,10 @@ export default function ProjectsDashboard() {
   // Track previous task statuses for checkbox undo
   const [taskPrevStatus, setTaskPrevStatus] = useState<Record<number, string>>({});
 
+  // Hierarchy: expanded Úkoly and parent for new Pod-úkol
+  const [expandedUkoly, setExpandedUkoly] = useState<Set<number>>(new Set());
+  const [parentForNewTask, setParentForNewTask] = useState<number | null>(null);
+
   // ---- Filtering ----
   const filteredProjects = useMemo(() => projects.filter(p => {
     if (filterStatus && p.status !== filterStatus) return false;
@@ -185,17 +189,19 @@ export default function ProjectsDashboard() {
     try {
       if (editingTask.id) {
         await projectsApi.updateTask(editingTask.id, editingTask);
-        setSnackbar({ open: true, message: 'Task updated', severity: 'success' });
+        setSnackbar({ open: true, message: 'Úkol uložen', severity: 'success' });
       } else {
-        await projectsApi.createTask(selectedProject.id, editingTask);
-        setSnackbar({ open: true, message: 'Task created', severity: 'success' });
+        const taskData = { ...editingTask, parent_task_id: parentForNewTask };
+        await projectsApi.createTask(selectedProject.id, taskData);
+        setSnackbar({ open: true, message: parentForNewTask ? 'Pod-úkol vytvořen' : 'Úkol vytvořen', severity: 'success' });
       }
       setTaskDialogOpen(false);
       setEditingTask(null);
+      setParentForNewTask(null);
       loadProjectDetail(selectedProject.id);
       loadProjects();
     } catch {
-      setSnackbar({ open: true, message: 'Failed to save task', severity: 'error' });
+      setSnackbar({ open: true, message: 'Nepodařilo se uložit', severity: 'error' });
     }
   };
 
@@ -372,7 +378,7 @@ export default function ProjectsDashboard() {
           <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
             {statusChip(project.status, STATUS_CONFIG)}
             {priorityChip(project.priority)}
-            {project.task_count > 0 && <Chip label={`${project.task_count} tasks`} size="small" variant="outlined" />}
+            {project.task_count > 0 && <Chip label={`${project.task_count} úkolů`} size="small" variant="outlined" />}
           </Stack>
           {project.labels?.length > 0 && (
             <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
@@ -396,10 +402,19 @@ export default function ProjectsDashboard() {
   };
 
   // ========== TASK ROW (List View) ==========
-  const renderTaskRow = (task: Task) => {
+  const toggleUkolExpanded = (id: number) => {
+    setExpandedUkoly(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const renderSubtaskRow = (task: Task) => {
     const tsCfg = TASK_STATUS_CONFIG[task.status] || TASK_STATUS_CONFIG.backlog;
     return (
-      <Paper key={task.id} sx={{ p: 1.5, mb: 1, display: 'flex', alignItems: 'center', gap: 1.5, borderRadius: 2 }}>
+      <Paper key={task.id} sx={{ p: 1, mb: 0.5, ml: 4, display: 'flex', alignItems: 'center', gap: 1, borderRadius: 1.5, bgcolor: '#fafafa', borderLeft: `3px solid ${(PRIORITY_CONFIG[task.priority] || PRIORITY_CONFIG.medium).color}22` }}>
+        <SubdirectoryArrowRight fontSize="small" sx={{ color: 'text.disabled', ml: 0.5 }} />
         <Checkbox
           size="small"
           checked={task.status === 'done'}
@@ -413,24 +428,13 @@ export default function ProjectsDashboard() {
           }}
         />
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="body2" sx={{ fontWeight: 600, textDecoration: task.status === 'done' ? 'line-through' : 'none' }}>
+          <Typography variant="body2" sx={{ fontSize: '0.85rem', textDecoration: task.status === 'done' ? 'line-through' : 'none' }}>
             {task.title}
           </Typography>
-          {task.description && <Typography variant="caption" color="text.secondary" sx={{ display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{task.description}</Typography>}
         </Box>
         <Stack direction="row" spacing={0.5} alignItems="center">
           {statusChip(task.status, TASK_STATUS_CONFIG)}
           {priorityChip(task.priority)}
-          {(task.comments?.length || 0) > 0 && (
-            <Badge badgeContent={task.comments?.length} color="primary" sx={{ '& .MuiBadge-badge': { fontSize: '0.65rem' } }}>
-              <Comment fontSize="small" color="action" />
-            </Badge>
-          )}
-          {(task.notes?.length || 0) > 0 && (
-            <Badge badgeContent={task.notes?.length} sx={{ '& .MuiBadge-badge': { bgcolor: '#ff9800', color: '#fff', fontSize: '0.65rem' } }}>
-              <StickyNote2 fontSize="small" color="action" />
-            </Badge>
-          )}
           <IconButton size="small" onClick={() => { setEditingTask(task); setTaskDialogOpen(true); setShowAudit(false); }}>
             <Edit fontSize="small" />
           </IconButton>
@@ -439,6 +443,79 @@ export default function ProjectsDashboard() {
           </IconButton>
         </Stack>
       </Paper>
+    );
+  };
+
+  const renderTaskRow = (task: Task) => {
+    const tsCfg = TASK_STATUS_CONFIG[task.status] || TASK_STATUS_CONFIG.backlog;
+    const subtasks = task.subtasks || [];
+    const hasSubtasks = subtasks.length > 0;
+    const isExpanded = expandedUkoly.has(task.id);
+    const doneSubtasks = subtasks.filter(s => s.status === 'done').length;
+    return (
+      <Box key={task.id}>
+        <Paper sx={{ p: 1.5, mb: hasSubtasks && isExpanded ? 0 : 1, display: 'flex', alignItems: 'center', gap: 1.5, borderRadius: 2, borderBottomLeftRadius: hasSubtasks && isExpanded ? 0 : undefined, borderBottomRightRadius: hasSubtasks && isExpanded ? 0 : undefined }}>
+          {hasSubtasks ? (
+            <IconButton size="small" onClick={() => toggleUkolExpanded(task.id)} sx={{ p: 0.25 }}>
+              {isExpanded ? <ExpandMore fontSize="small" /> : <ChevronRight fontSize="small" />}
+            </IconButton>
+          ) : (
+            <Checkbox
+              size="small"
+              checked={task.status === 'done'}
+              onChange={() => {
+                if (task.status === 'done') {
+                  handleQuickStatusChange(task.id, taskPrevStatus[task.id] || 'todo');
+                } else {
+                  setTaskPrevStatus(prev => ({ ...prev, [task.id]: task.status }));
+                  handleQuickStatusChange(task.id, 'done');
+                }
+              }}
+            />
+          )}
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, textDecoration: task.status === 'done' ? 'line-through' : 'none' }}>
+              {task.title}
+            </Typography>
+            {task.description && <Typography variant="caption" color="text.secondary" sx={{ display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{task.description}</Typography>}
+          </Box>
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            {hasSubtasks && (
+              <Chip label={`${doneSubtasks}/${subtasks.length}`} size="small" variant="outlined" sx={{ fontSize: '0.7rem' }} />
+            )}
+            {statusChip(task.status, TASK_STATUS_CONFIG)}
+            {priorityChip(task.priority)}
+            {(task.comments?.length || 0) > 0 && (
+              <Badge badgeContent={task.comments?.length} color="primary" sx={{ '& .MuiBadge-badge': { fontSize: '0.65rem' } }}>
+                <Comment fontSize="small" color="action" />
+              </Badge>
+            )}
+            {(task.notes?.length || 0) > 0 && (
+              <Badge badgeContent={task.notes?.length} sx={{ '& .MuiBadge-badge': { bgcolor: '#ff9800', color: '#fff', fontSize: '0.65rem' } }}>
+                <StickyNote2 fontSize="small" color="action" />
+              </Badge>
+            )}
+            <Tooltip title="Přidat Pod-úkol">
+              <IconButton size="small" onClick={() => { setParentForNewTask(task.id); setEditingTask({ status: 'backlog', priority: 'medium', task_type: 'task' }); setTaskDialogOpen(true); setShowAudit(false); }}>
+                <Add fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <IconButton size="small" onClick={() => { setEditingTask(task); setTaskDialogOpen(true); setShowAudit(false); }}>
+              <Edit fontSize="small" />
+            </IconButton>
+            <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'task', id: task.id }); setDeleteConfirmOpen(true); }}>
+              <Delete fontSize="small" />
+            </IconButton>
+          </Stack>
+        </Paper>
+        {hasSubtasks && (
+          <Collapse in={isExpanded}>
+            <Box sx={{ mb: 1.5, pt: 0.5, pb: 1, px: 1, bgcolor: '#f8f9fa', borderRadius: '0 0 8px 8px', border: '1px solid #e0e0e0', borderTop: 'none' }}>
+              {subtasks.map(s => renderSubtaskRow(s))}
+            </Box>
+          </Collapse>
+        )}
+      </Box>
     );
   };
 
@@ -609,7 +686,7 @@ export default function ProjectsDashboard() {
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Typography variant="subtitle1" fontWeight={600}>{project.name}</Typography>
-                {project.task_count > 0 && <Chip label={`${project.task_count} tasks`} size="small" variant="outlined" />}
+                {project.task_count > 0 && <Chip label={`${project.task_count} úkolů`} size="small" variant="outlined" />}
                 {project.labels?.map(l => <Chip key={l.id} label={l.name} size="small" sx={{ bgcolor: l.color + '22', color: l.color, fontSize: '0.68rem' }} />)}
               </Stack>
             </Box>
@@ -658,7 +735,8 @@ export default function ProjectsDashboard() {
     const sp = selectedProject;
     const statusCfg = STATUS_CONFIG[sp.status] || STATUS_CONFIG.backlog;
     const doneTasks = sp.tasks?.filter(t => t.status === 'done').length || 0;
-    const totalTasks = sp.tasks?.length || 0;
+    const topLevelTasks = (sp.tasks || []).filter(t => !t.parent_task_id);
+    const totalTasks = topLevelTasks.length;
     return (
       <Box>
         {/* Header */}
@@ -672,7 +750,7 @@ export default function ProjectsDashboard() {
           <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap">
             <Chip label={statusCfg.label} size="small" sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: '#fff', fontWeight: 600 }} />
             <Chip label={(PRIORITY_CONFIG[sp.priority] || PRIORITY_CONFIG.medium).label} size="small" sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: '#fff' }} />
-            {totalTasks > 0 && <Chip label={`${doneTasks}/${totalTasks} tasks done`} size="small" sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: '#fff' }} />}
+            {totalTasks > 0 && <Chip label={`${doneTasks}/${sp.tasks?.length || 0} úkolů hotovo`} size="small" sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: '#fff' }} />}
             {sp.estimated_hours && <Chip label={`Est: ${sp.estimated_hours}h`} size="small" sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: '#fff' }} />}
             {sp.location && (
               <Chip icon={<FolderOpen fontSize="small" />} label={sp.location} size="small" sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: '#fff', maxWidth: 300 }} />
@@ -692,8 +770,8 @@ export default function ProjectsDashboard() {
             <ToggleButton value="kanban"><ViewModule fontSize="small" /></ToggleButton>
             <ToggleButton value="swimlane"><ViewStream fontSize="small" /></ToggleButton>
           </ToggleButtonGroup>
-          <Button variant="contained" startIcon={<Add />} size="small" onClick={() => { setEditingTask({ status: 'backlog', priority: 'medium', task_type: 'task' }); setTaskDialogOpen(true); setShowAudit(false); }}>
-            New Task
+          <Button variant="contained" startIcon={<Add />} size="small" onClick={() => { setParentForNewTask(null); setEditingTask({ status: 'backlog', priority: 'medium', task_type: 'task' }); setTaskDialogOpen(true); setShowAudit(false); }}>
+            Nový Úkol
           </Button>
         </Box>
 

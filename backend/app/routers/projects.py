@@ -124,6 +124,7 @@ async def create_project(project_in: ProjectCreate, db: Session = Depends(get_db
         name=project_in.name,
         slug=slug,
         description=project_in.description,
+        docs_repo=project_in.docs_repo,
         priority=project_in.priority,
         status=project_in.status,
         location=project_in.location,
@@ -153,6 +154,10 @@ async def get_project(project_id: int, db: Session = Depends(get_db)):
             joinedload(Project.tasks).joinedload(Task.labels),
             joinedload(Project.tasks).joinedload(Task.notes),
             joinedload(Project.tasks).joinedload(Task.audit_logs),
+            joinedload(Project.tasks).joinedload(Task.subtasks).joinedload(Task.comments),
+            joinedload(Project.tasks).joinedload(Task.subtasks).joinedload(Task.labels),
+            joinedload(Project.tasks).joinedload(Task.subtasks).joinedload(Task.notes),
+            joinedload(Project.tasks).joinedload(Task.subtasks).joinedload(Task.audit_logs),
             joinedload(Project.members),
             joinedload(Project.labels),
         )
@@ -206,6 +211,7 @@ async def list_tasks(
     project_id: int,
     status: Optional[str] = Query(None),
     priority: Optional[str] = Query(None),
+    parent_id: Optional[int] = Query(None, description="Filter by parent task. Use 0 for top-level only."),
     db: Session = Depends(get_db),
 ):
     query = (
@@ -215,9 +221,18 @@ async def list_tasks(
             joinedload(Task.labels),
             joinedload(Task.notes),
             joinedload(Task.audit_logs),
+            joinedload(Task.subtasks).joinedload(Task.comments),
+            joinedload(Task.subtasks).joinedload(Task.labels),
+            joinedload(Task.subtasks).joinedload(Task.notes),
+            joinedload(Task.subtasks).joinedload(Task.audit_logs),
         )
         .filter(Task.project_id == project_id)
     )
+    if parent_id is not None:
+        if parent_id == 0:
+            query = query.filter(Task.parent_task_id.is_(None))
+        else:
+            query = query.filter(Task.parent_task_id == parent_id)
     if status:
         query = query.filter(Task.status == status)
     if priority:
@@ -236,6 +251,7 @@ async def create_task(
     task = Task(
         project_id=project_id,
         sprint_id=task_in.sprint_id,
+        parent_task_id=task_in.parent_task_id,
         title=task_in.title,
         description=task_in.description,
         task_type=task_in.task_type,
@@ -268,6 +284,10 @@ async def get_task(task_id: int, db: Session = Depends(get_db)):
             joinedload(Task.labels),
             joinedload(Task.notes),
             joinedload(Task.audit_logs),
+            joinedload(Task.subtasks).joinedload(Task.comments),
+            joinedload(Task.subtasks).joinedload(Task.labels),
+            joinedload(Task.subtasks).joinedload(Task.notes),
+            joinedload(Task.subtasks).joinedload(Task.audit_logs),
         )
         .filter(Task.id == task_id)
         .first()
@@ -286,6 +306,7 @@ async def update_task(task_id: int, task_in: TaskUpdate, db: Session = Depends(g
             joinedload(Task.labels),
             joinedload(Task.notes),
             joinedload(Task.audit_logs),
+            joinedload(Task.subtasks),
         )
         .filter(Task.id == task_id)
         .first()

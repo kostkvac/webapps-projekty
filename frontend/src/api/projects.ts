@@ -6,6 +6,7 @@ export interface Project {
   name: string;
   slug: string;
   description: string | null;
+  docs_repo: string | null;
   priority: string;
   status: string;
   location: string | null;
@@ -25,6 +26,7 @@ export interface Task {
   id: number;
   project_id: number;
   sprint_id: number | null;
+  parent_task_id: number | null;
   title: string;
   description: string | null;
   task_type: string;
@@ -43,6 +45,7 @@ export interface Task {
   labels: Label[];
   notes: TaskNote[];
   audit_logs: TaskAudit[];
+  subtasks: Task[];
 }
 
 export interface TaskComment {

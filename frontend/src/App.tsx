@@ -47,7 +47,7 @@ export default function App() {
       <CssBaseline />
       <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 3, bgcolor: '#fff' }}>
         <Tabs value={tab} onChange={(_, v) => { setTab(v); setSelectedRepo(null); }}>
-          <Tab icon={<Assignment fontSize="small" />} iconPosition="start" label="Projects" />
+          <Tab icon={<Assignment fontSize="small" />} iconPosition="start" label="Projekty" />
           <Tab
             icon={<MenuBook fontSize="small" />}
             iconPosition="start"

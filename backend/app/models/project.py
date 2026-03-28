@@ -36,6 +36,7 @@ class Project(Base):
     name = Column(String(200), nullable=False)
     slug = Column(String(200), nullable=False, unique=True)
     description = Column(Text)
+    docs_repo = Column(String(200))
     status = Column(String(50), default="backlog")
     priority = Column(String(50), default="medium")
     location = Column(String(500))
@@ -83,6 +84,7 @@ class Task(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     sprint_id = Column(Integer, ForeignKey("sprints.id", ondelete="SET NULL"))
+    parent_task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"))
     title = Column(String(500), nullable=False)
     description = Column(Text)
     task_type = Column(String(50), default="task")
@@ -100,6 +102,8 @@ class Task(Base):
 
     project = relationship("Project", back_populates="tasks")
     sprint = relationship("Sprint", back_populates="tasks")
+    parent = relationship("Task", remote_side=[id], back_populates="subtasks")
+    subtasks = relationship("Task", back_populates="parent", cascade="all, delete-orphan")
     comments = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan")
     notes = relationship("TaskNote", back_populates="task", cascade="all, delete-orphan", foreign_keys="[TaskNote.task_id]")
     audit_logs = relationship("TaskAudit", back_populates="task", cascade="all, delete-orphan", foreign_keys="[TaskAudit.task_id]")
@@ -190,15 +194,16 @@ class ActivityLog(Base):
     project = relationship("Project", back_populates="activities")
 
 
-# Computed column: task count per project
+# Computed column: task count per project (top-level only = úkoly)
 Project.task_count = column_property(
     select(func.count(Task.id))
     .where(Task.project_id == Project.id)
+    .where(Task.parent_task_id.is_(None))
     .correlate(Project)
     .scalar_subquery()
 )
 
-# Computed column: progress percent per project
+# Computed column: progress percent per project (top-level tasks only)
 Project.progress_percent = column_property(
     select(
         func.coalesce(
@@ -210,6 +215,7 @@ Project.progress_percent = column_property(
         )
     )
     .where(Task.project_id == Project.id)
+    .where(Task.parent_task_id.is_(None))
     .correlate(Project)
     .scalar_subquery()
 )
