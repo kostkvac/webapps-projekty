@@ -8,7 +8,7 @@ import {
   Checkbox, OutlinedInput, ListItemText, Collapse,
   ToggleButton, ToggleButtonGroup, Divider, Switch, FormControlLabel, Tooltip,
 } from '@mui/material';
-import Grid from '@mui/material/Grid';
+// Grid import removed - using row-based layout
 import {
   Add, Edit, Delete, FolderOpen, ArrowBack,
   Schedule, Science, ViewModule, ViewList, ViewStream,
@@ -18,7 +18,8 @@ import {
   Rocket, History, StickyNote2, Comment, ArrowForward, MenuBook,
 } from '@mui/icons-material';
 import projectsApi from '../api/projects';
-import type { Project, Task, ProjectDetail, Label, TaskNote, TaskAudit } from '../api/projects';
+import { docsApi } from '../api/projects';
+import type { Project, Task, ProjectDetail, Label, TaskNote, TaskAudit, DocFile } from '../api/projects';
 
 const COLORS = { darkForest: '#00472e', emerald: '#007638' };
 
@@ -37,7 +38,6 @@ const TASK_CFG: Record<string, { label: string; color: string; bg: string }> = {
   todo:        { label: 'Plánováno', color: '#1565c0', bg: '#e3f2fd' },
   in_progress: { label: 'Probíhá', color: COLORS.emerald, bg: '#e8f5e9' },
   testing:     { label: 'Testování', color: '#e65100', bg: '#fff3e0' },
-  review:      { label: 'Review',     color: '#f57c00', bg: '#fff8e1' },
   done:        { label: 'Hotovo',     color: '#2e7d32', bg: '#c8e6c9' },
   blocked:     { label: 'Blokováno', color: '#c62828', bg: '#ffebee' },
 };
@@ -49,7 +49,7 @@ const PRI_CFG: Record<string, { label: string; color: string; icon?: ReactElemen
   critical: { label: 'Kritická', color: '#c62828', icon: <Flag fontSize="small" /> },
 };
 
-const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'testing', 'review', 'done', 'blocked'];
+const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'testing', 'done', 'blocked'];
 const PROJ_STATUSES = ['backlog', 'planning', 'in_progress', 'testing', 'review', 'done', 'archived'];
 
 export default function ProjectsDashboard() {
@@ -60,6 +60,9 @@ export default function ProjectsDashboard() {
   const [loading, setLoading] = useState(true);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({ open: false, message: '', severity: 'success' });
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'status' | 'priority' | 'name' | 'progress'>('status');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterPriority, setFilterPriority] = useState<string>('all');
   const [taskViewMode, setTaskViewMode] = useState<'list' | 'kanban' | 'swimlane'>('list');
   const [expandedUkoly, setExpandedUkoly] = useState<Set<number>>(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState<number | null>(null);
@@ -78,6 +81,44 @@ export default function ProjectsDashboard() {
   const [noteText, setNoteText] = useState('');
   const [noteType, setNoteType] = useState<'bug' | 'note' | 'idea'>('note');
   const [showAudit, setShowAudit] = useState(false);
+  const [docDetailTask, setDocDetailTask] = useState<Task | null>(null);
+  const [docContent, setDocContent] = useState<string | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
+  const [docFiles, setDocFiles] = useState<Record<string, DocFile[]>>({});
+
+  const findDocFile = async (task: Task, parentTitle: string): Promise<string | null> => {
+    if (!selectedProject?.docs_repo) return null;
+    const repo = selectedProject.docs_repo;
+    const cacheKey = repo + '/' + parentTitle;
+    let files = docFiles[cacheKey];
+    if (!files) {
+      try {
+        files = await docsApi.listFiles(repo, parentTitle);
+        setDocFiles(prev => ({ ...prev, [cacheKey]: files! }));
+      } catch { return null; }
+    }
+    const titleLower = task.title.toLowerCase();
+    const match = files.find(f => !f.is_dir && titleLower.includes(f.name.replace(/\.md$/, '').toLowerCase()));
+    if (match) return parentTitle + '/' + match.path;
+    const fuzzy = files.find(f => !f.is_dir && f.name.replace(/\.md$/, '').toLowerCase().split(' ').some(w => w.length > 3 && titleLower.includes(w)));
+    return fuzzy ? parentTitle + '/' + fuzzy.path : null;
+  };
+
+  const openDocDetail = async (task: Task, parentTitle: string) => {
+    setDocDetailTask(task);
+    setDocContent(null);
+    setDocLoading(true);
+    try {
+      const path = await findDocFile(task, parentTitle);
+      if (path && selectedProject?.docs_repo) {
+        const doc = await docsApi.readFile(selectedProject.docs_repo, path);
+        setDocContent(doc.content);
+      } else {
+        setDocContent(null);
+      }
+    } catch { setDocContent(null); }
+    setDocLoading(false);
+  };
 
   const showSnack = (message: string, severity: 'success' | 'error' = 'success') =>
     setSnackbar({ open: true, message, severity });
@@ -248,16 +289,24 @@ export default function ProjectsDashboard() {
     setTaskDialogOpen(true);
   };
 
-  const filteredProjects = projects.filter(p =>
-    !searchQuery
-      || p.name.toLowerCase().includes(searchQuery.toLowerCase())
-      || (p.description || '').toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredProjects = projects
+    .filter(p =>
+      (!searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.description || '').toLowerCase().includes(searchQuery.toLowerCase()))
+      && (filterStatus === 'all' || p.status === filterStatus)
+      && (filterPriority === 'all' || p.priority === filterPriority)
+    )
+    .sort((a, b) => {
+      if (sortBy === 'status') return PROJ_STATUSES.indexOf(a.status) - PROJ_STATUSES.indexOf(b.status);
+      if (sortBy === 'priority') { const po = ['critical', 'high', 'medium', 'low']; return po.indexOf(a.priority) - po.indexOf(b.priority); }
+      if (sortBy === 'name') return a.name.localeCompare(b.name, 'cs');
+      if (sortBy === 'progress') return (b.progress_percent || 0) - (a.progress_percent || 0);
+      return 0;
+    });
 
   // ======== OVERVIEW ========
   const renderOverview = () => (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h4" fontWeight={700} sx={{ color: COLORS.darkForest }}>Projekty</Typography>
         <Stack direction="row" spacing={1}>
           <Button variant="outlined" size="small" onClick={() => setLabelsDialogOpen(true)}>Štítky</Button>
@@ -267,53 +316,78 @@ export default function ProjectsDashboard() {
           </Button>
         </Stack>
       </Box>
-      <TextField size="small" placeholder="Hledat projekty..." value={searchQuery}
-        onChange={e => setSearchQuery(e.target.value)} sx={{ mb: 3, minWidth: 280 }}
-        InputProps={{ startAdornment: <FilterList fontSize="small" sx={{ mr: 0.5, color: 'action.active' }} /> }}
-      />
-      <Grid container spacing={2.5}>
+      <Stack direction="row" spacing={1.5} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
+        <TextField size="small" placeholder="Hledat..." value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)} sx={{ minWidth: 200 }}
+          InputProps={{ startAdornment: <FilterList fontSize="small" sx={{ mr: 0.5, color: 'action.active' }} /> }}
+        />
+        <FormControl size="small" sx={{ minWidth: 130 }}>
+          <InputLabel>Stav</InputLabel>
+          <Select value={filterStatus} label="Stav" onChange={e => setFilterStatus(e.target.value)}>
+            <MenuItem value="all">Všechny</MenuItem>
+            {PROJ_STATUSES.map(s => <MenuItem key={s} value={s}>{STATUS_CFG[s]?.label || s}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 130 }}>
+          <InputLabel>Priorita</InputLabel>
+          <Select value={filterPriority} label="Priorita" onChange={e => setFilterPriority(e.target.value)}>
+            <MenuItem value="all">Všechny</MenuItem>
+            {Object.entries(PRI_CFG).map(([v, c]) => <MenuItem key={v} value={v}>{c.label}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 140 }}>
+          <InputLabel>Řadit dle</InputLabel>
+          <Select value={sortBy} label="Řadit dle" onChange={e => setSortBy(e.target.value as any)}>
+            <MenuItem value="status">Stavu</MenuItem>
+            <MenuItem value="priority">Priority</MenuItem>
+            <MenuItem value="name">Názvu</MenuItem>
+            <MenuItem value="progress">Progresu</MenuItem>
+          </Select>
+        </FormControl>
+      </Stack>
+      <Stack spacing={1}>
         {filteredProjects.map(project => {
           const sc = STATUS_CFG[project.status] || STATUS_CFG.backlog;
           return (
-            <Grid item xs={12} sm={6} md={4} key={project.id}>
-              <Card sx={{ borderRadius: 3, cursor: 'pointer', height: '100%', border: '1px solid #e0e0e0', transition: 'all 0.2s', '&:hover': { transform: 'translateY(-2px)', boxShadow: 4, borderColor: COLORS.emerald } }}
-                onClick={() => openProject(project.id)}>
-                <CardContent sx={{ p: 2.5 }}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1.5 }}>
-                    <Typography variant="h6" fontWeight={700} sx={{ flex: 1, mr: 1 }}>{project.name}</Typography>
-                    <Box onClick={e => e.stopPropagation()}>
-                      <IconButton size="small" onClick={() => { setEditingProject({ ...project, label_ids: project.labels?.map(l => l.id) || [] }); setProjectDialogOpen(true); }}><Edit fontSize="small" /></IconButton>
-                      <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'project', id: project.id }); setDeleteConfirmOpen(true); }}><Delete fontSize="small" /></IconButton>
-                    </Box>
-                  </Box>
-                  {project.description && (
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                      {project.description}
-                    </Typography>
-                  )}
-                  <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1.5 }}>
-                    {sChip(project.status, STATUS_CFG)} {pChip(project.priority)}
-                    {project.task_count > 0 && <Chip label={project.task_count + ' úkolů'} size="small" variant="outlined" />}
-                    {project.docs_repo && <Chip icon={<MenuBook fontSize="small" />} label="Docs" size="small" sx={{ bgcolor: '#e3f2fd', color: '#1565c0' }} />}
-                  </Stack>
-                  {project.labels?.length > 0 && (
-                    <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
-                      {project.labels.map(l => <Chip key={l.id} label={l.name} size="small" sx={{ bgcolor: l.color + '22', color: l.color, fontSize: '0.68rem' }} />)}
-                    </Stack>
-                  )}
-                  {project.task_count > 0 && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
-                      <LinearProgress variant="determinate" value={project.progress_percent}
-                        sx={{ flex: 1, height: 6, borderRadius: 3, bgcolor: '#e0e0e0', '& .MuiLinearProgress-bar': { bgcolor: sc.color } }} />
-                      <Typography variant="caption" fontWeight={700}>{project.progress_percent}%</Typography>
-                    </Box>
-                  )}
-                </CardContent>
-              </Card>
-            </Grid>
+            <Paper key={project.id}
+              sx={{ display: 'flex', alignItems: 'center', gap: 2, px: 2, py: 1.5, borderRadius: 2,
+                borderLeft: '4px solid ' + sc.color, cursor: 'pointer', transition: 'all 0.15s',
+                '&:hover': { boxShadow: 3, bgcolor: '#fafffe' } }}
+              onClick={() => openProject(project.id)}>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.25 }}>
+                  <Typography variant="subtitle1" fontWeight={700} noWrap>{project.name}</Typography>
+                  {project.docs_repo && <MenuBook sx={{ fontSize: 16, color: '#1565c0' }} />}
+                </Box>
+                {project.description && (
+                  <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 500 }}>{project.description}</Typography>
+                )}
+              </Box>
+              <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
+                {sChip(project.status, STATUS_CFG)} {pChip(project.priority)}
+                {project.task_count > 0 && <Chip label={project.task_count + ' úkolů'} size="small" variant="outlined" />}
+              </Stack>
+              {project.labels?.length > 0 && (
+                <Stack direction="row" spacing={0.5} flexShrink={0}>
+                  {project.labels.slice(0, 3).map(l => <Chip key={l.id} label={l.name} size="small" sx={{ bgcolor: l.color + '22', color: l.color, fontSize: '0.68rem' }} />)}
+                  {project.labels.length > 3 && <Chip label={'+' + (project.labels.length - 3)} size="small" variant="outlined" sx={{ fontSize: '0.68rem' }} />}
+                </Stack>
+              )}
+              {project.task_count > 0 && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 100, flexShrink: 0 }}>
+                  <LinearProgress variant="determinate" value={project.progress_percent}
+                    sx={{ flex: 1, height: 6, borderRadius: 3, bgcolor: '#e0e0e0', '& .MuiLinearProgress-bar': { bgcolor: sc.color } }} />
+                  <Typography variant="caption" fontWeight={700} sx={{ minWidth: 30, textAlign: 'right' }}>{project.progress_percent}%</Typography>
+                </Box>
+              )}
+              <Box onClick={e => e.stopPropagation()} sx={{ flexShrink: 0 }}>
+                <IconButton size="small" onClick={() => { setEditingProject({ ...project, label_ids: project.labels?.map(l => l.id) || [] }); setProjectDialogOpen(true); }}><Edit fontSize="small" /></IconButton>
+                <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'project', id: project.id }); setDeleteConfirmOpen(true); }}><Delete fontSize="small" /></IconButton>
+              </Box>
+            </Paper>
           );
         })}
-      </Grid>
+      </Stack>
       {filteredProjects.length === 0 && !loading && (
         <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 2, bgcolor: '#fafafa', mt: 2 }}>
           <Typography color="text.secondary">Žádné projekty. Vytvořte první projekt!</Typography>
@@ -322,25 +396,95 @@ export default function ProjectsDashboard() {
     </Box>
   );
 
-  // ======== POD-ÚKOL ROW ========
-  const renderPodUkol = (sub: Task) => (
-    <Box key={sub.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, px: 1, mb: 0.5, bgcolor: '#fff', borderRadius: 1.5, border: '1px solid #f0f0f0' }}>
-      <SubdirectoryArrowRight fontSize="small" sx={{ color: 'text.disabled', flexShrink: 0 }} />
-      <Checkbox size="small" sx={{ p: 0.25 }} checked={sub.status === 'done'}
-        onChange={() => {
-          if (sub.status === 'done') quickStatus(sub.id, taskPrevStatus[sub.id] || 'todo');
-          else { setTaskPrevStatus(p => ({ ...p, [sub.id]: sub.status })); quickStatus(sub.id, 'done'); }
-        }} />
-      <Typography variant="body2" sx={{ flex: 1, textDecoration: sub.status === 'done' ? 'line-through' : 'none', color: sub.status === 'done' ? 'text.disabled' : 'inherit' }}>
-        {sub.title}
-      </Typography>
-      <Stack direction="row" spacing={0.5} alignItems="center">
-        {sChip(sub.status, TASK_CFG)} {pChip(sub.priority)}
-        <IconButton size="small" onClick={() => openTaskDialog(sub)}><Edit fontSize="small" /></IconButton>
-        <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'task', id: sub.id }); setDeleteConfirmOpen(true); }}><Delete fontSize="small" /></IconButton>
-      </Stack>
+  // ======== SUB-KANBAN (Pod-úkoly) ========
+  const renderSubKanban = (subs: Task[], parentId: number, parentTitle: string) => (
+    <Box sx={{ display: 'flex', gap: 1.5, overflowX: 'auto', pb: 1, pt: 1 }}>
+      {TASK_STATUSES.map(status => {
+        const cfg = TASK_CFG[status];
+        const colKey = `sub_${parentId}_${status}`;
+        const colTasks = subs.filter(t => t.status === status);
+        if (colTasks.length === 0 && !['backlog', 'todo', 'in_progress', 'done'].includes(status)) return null;
+        return (
+          <Paper key={status} sx={{ minWidth: 170, flex: '0 0 170px', borderRadius: 1.5, bgcolor: dragOverCol === colKey ? '#e8f5e9' : '#fff', border: '1px solid #e8e8e8' }}
+            onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); }}
+            onDragLeave={() => setDragOverCol(null)}
+            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); setDraggedTaskId(null); }}>
+            <Box sx={{ p: 1, borderBottom: '2px solid ' + cfg.color }}>
+              <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({colTasks.length})</Typography>
+            </Box>
+            <Box sx={{ p: 0.75, minHeight: 50 }}>
+              {colTasks.map(sub => (
+                <Card key={sub.id} draggable
+                  onDragStart={e => { setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                  onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
+                  sx={{ mb: 0.75, cursor: 'pointer', borderRadius: 1, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
+                    opacity: draggedTaskId === sub.id ? 0.4 : 1, '&:hover': { boxShadow: 2 } }}>
+                  <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
+                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 0.25 }}>{sub.title}</Typography>
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      {pChip(sub.priority)}
+                      <Box sx={{ ml: 'auto' }}>
+                        <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(sub); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                        <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: sub.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+            </Box>
+          </Paper>
+        );
+      }).filter(Boolean)}
     </Box>
   );
+
+  // ======== SUB-SWIMLANE (Pod-úkoly) ========
+  const renderSubSwimlane = (subs: Task[], parentId: number, parentTitle: string) => (
+    <Box>
+      {TASK_STATUSES.map(status => {
+        const cfg = TASK_CFG[status];
+        const colKey = `sub_${parentId}_${status}`;
+        const rowTasks = subs.filter(t => t.status === status);
+        if (rowTasks.length === 0 && !['backlog', 'todo', 'in_progress', 'done'].includes(status)) return null;
+        return (
+          <Box key={status} sx={{ display: 'flex', mb: 1, borderRadius: 1.5, overflow: 'hidden' }}
+            onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); }}
+            onDragLeave={() => setDragOverCol(null)}
+            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); setDraggedTaskId(null); }}>
+            <Box sx={{ minWidth: 100, p: 1, bgcolor: cfg.bg, display: 'flex', alignItems: 'center', borderLeft: '2px solid ' + cfg.color }}>
+              <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color, fontSize: '0.68rem' }}>{cfg.label} ({rowTasks.length})</Typography>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 0.75, p: 0.75, flex: 1, overflowX: 'auto', minHeight: 44, bgcolor: dragOverCol === colKey ? '#e8f5e960' : 'transparent' }}>
+              {rowTasks.map(sub => (
+                <Card key={sub.id} draggable
+                  onDragStart={e => { setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                  onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
+                  sx={{ minWidth: 150, cursor: 'pointer', borderRadius: 1, flexShrink: 0, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
+                    opacity: draggedTaskId === sub.id ? 0.4 : 1, '&:hover': { boxShadow: 2 } }}>
+                  <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
+                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 0.25 }}>{sub.title}</Typography>
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      {pChip(sub.priority)}
+                      <Box sx={{ ml: 'auto' }}>
+                        <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(sub); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+            </Box>
+          </Box>
+        );
+      }).filter(Boolean)}
+    </Box>
+  );
+
+  const renderSubTasks = (subs: Task[], parentId: number, parentTitle: string) => {
+    if (taskViewMode === 'swimlane') return renderSubSwimlane(subs, parentId, parentTitle);
+    return renderSubKanban(subs, parentId, parentTitle);
+  };
 
   // ======== ÚKOL ROW ========
   const renderUkolRow = (task: Task) => {
@@ -386,8 +530,8 @@ export default function ProjectsDashboard() {
         {subs.length > 0 && (
           <Collapse in={isExp}>
             <Box sx={{ ml: 2, px: 1, pb: 1, bgcolor: '#f8f9fa', border: '1px solid #e0e0e0', borderTop: 'none', borderRadius: '0 0 8px 8px' }}>
-              {subs.map(s => renderPodUkol(s))}
-              <Box sx={{ mt: 0.5, pl: 4 }}>
+              {renderSubTasks(subs, task.id, task.title)}
+              <Box sx={{ mt: 0.5 }}>
                 <Button size="small" startIcon={<Add fontSize="small" />} onClick={() => openTaskDialog(null, task.id)} sx={{ fontSize: '0.78rem' }}>
                   Přidat pod-úkol
                 </Button>
@@ -401,77 +545,230 @@ export default function ProjectsDashboard() {
 
   // ======== KANBAN ========
   const renderKanban = (tasks: Task[]) => (
-    <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', pb: 2 }}>
-      {TASK_STATUSES.map(status => {
-        const cfg = TASK_CFG[status];
-        const colTasks = tasks.filter(t => t.status === status);
+    <>
+      <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', pb: 2 }}>
+        {TASK_STATUSES.map(status => {
+          const cfg = TASK_CFG[status];
+          const colTasks = tasks.filter(t => t.status === status);
+          return (
+            <Paper key={status} sx={{ minWidth: 240, flex: '0 0 240px', borderRadius: 2, bgcolor: dragOverCol === status ? '#e8f5e9' : '#f5f5f5' }}
+              onDragOver={e => { e.preventDefault(); setDragOverCol(status); }}
+              onDragLeave={() => setDragOverCol(null)}
+              onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); }}>
+              <Box sx={{ p: 1.5, borderBottom: '3px solid ' + cfg.color }}>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({colTasks.length})</Typography>
+              </Box>
+              <Box sx={{ p: 1, minHeight: 120 }}>
+                {colTasks.map(t => {
+                  const subs = t.subtasks || [];
+                  const isExp = expandedUkoly.has(t.id);
+                  return (
+                    <Card key={t.id} draggable
+                      onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
+                      onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                      onClick={() => toggleUkol(t.id)}
+                      sx={{ mb: 1, cursor: 'pointer', borderRadius: 1.5, borderLeft: '3px solid ' + (PRI_CFG[t.priority] || PRI_CFG.medium).color, opacity: draggedTaskId === t.id ? 0.4 : 1, outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 3 } }}>
+                      <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
+                          <IconButton size="small" sx={{ p: 0.25, ml: 0.5 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                        </Box>
+                        <Stack direction="row" spacing={0.5}>
+                          {pChip(t.priority)}
+                          {subs.length > 0 && <Chip label={subs.filter(s => s.status === 'done').length + '/' + subs.length + ' pod.'} size="small" variant="outlined" sx={{ fontSize: '0.62rem' }} />}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </Box>
+            </Paper>
+          );
+        })}
+      </Box>
+      {tasks.filter(t => expandedUkoly.has(t.id)).map(t => {
+        const subs = t.subtasks || [];
+        const tc = TASK_CFG[t.status] || TASK_CFG.backlog;
         return (
-          <Paper key={status} sx={{ minWidth: 240, flex: '0 0 240px', borderRadius: 2, bgcolor: dragOverCol === status ? '#e8f5e9' : '#f5f5f5' }}
-            onDragOver={e => { e.preventDefault(); setDragOverCol(status); }}
-            onDragLeave={() => setDragOverCol(null)}
-            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); }}>
-            <Box sx={{ p: 1.5, borderBottom: '3px solid ' + cfg.color }}>
-              <Typography variant="subtitle2" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({colTasks.length})</Typography>
+          <Paper key={'sub-' + t.id} sx={{ p: 2, mb: 2, borderRadius: 2, borderLeft: '4px solid ' + tc.color }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+              <Typography variant="subtitle1" fontWeight={700}>
+                <SubdirectoryArrowRight fontSize="small" sx={{ mr: 0.5, verticalAlign: 'middle' }} />
+                Pod-úkoly: {t.title}
+              </Typography>
+              <Button size="small" startIcon={<Add fontSize="small" />} onClick={() => openTaskDialog(null, t.id)}>
+                Přidat pod-úkol
+              </Button>
             </Box>
-            <Box sx={{ p: 1, minHeight: 120 }}>
-              {colTasks.map(t => {
-                const subs = t.subtasks || [];
-                return (
-                  <Card key={t.id} draggable
-                    onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
-                    onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
-                    onClick={() => openTaskDialog(t)}
-                    sx={{ mb: 1, cursor: 'grab', borderRadius: 1.5, borderLeft: '3px solid ' + (PRI_CFG[t.priority] || PRI_CFG.medium).color, opacity: draggedTaskId === t.id ? 0.4 : 1, '&:hover': { boxShadow: 3 } }}>
-                    <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-                      <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>{t.title}</Typography>
-                      <Stack direction="row" spacing={0.5}>
-                        {pChip(t.priority)}
-                        {subs.length > 0 && <Chip label={subs.filter(s => s.status === 'done').length + '/' + subs.length + ' pod.'} size="small" variant="outlined" sx={{ fontSize: '0.62rem' }} />}
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </Box>
+            {subs.length > 0 ? renderSubTasks(subs, t.id, t.title) : (
+              <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>Zatím žádné pod-úkoly.</Typography>
+            )}
           </Paper>
         );
       })}
-    </Box>
+    </>
   );
 
   // ======== SWIMLANE ========
   const renderSwimlane = (tasks: Task[]) => (
-    <Box>
-      {TASK_STATUSES.map(status => {
-        const cfg = TASK_CFG[status];
-        const rowTasks = tasks.filter(t => t.status === status);
+    <>
+      <Box>
+        {TASK_STATUSES.map(status => {
+          const cfg = TASK_CFG[status];
+          const rowTasks = tasks.filter(t => t.status === status);
+          return (
+            <Box key={status} sx={{ display: 'flex', mb: 1.5, borderRadius: 2, overflow: 'hidden' }}
+              onDragOver={e => { e.preventDefault(); setDragOverCol(status); }}
+              onDragLeave={() => setDragOverCol(null)}
+              onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); }}>
+              <Box sx={{ minWidth: 130, p: 1.5, bgcolor: cfg.bg, display: 'flex', alignItems: 'center', borderLeft: '3px solid ' + cfg.color }}>
+                <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({rowTasks.length})</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', gap: 1, p: 1, flex: 1, overflowX: 'auto', minHeight: 60, bgcolor: dragOverCol === status ? '#e8f5e960' : 'transparent' }}>
+                {rowTasks.map(t => {
+                  const subs = t.subtasks || [];
+                  const isExp = expandedUkoly.has(t.id);
+                  return (
+                    <Card key={t.id} draggable
+                      onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
+                      onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                      onClick={() => toggleUkol(t.id)}
+                      sx={{ minWidth: 180, cursor: 'pointer', borderRadius: 1.5, flexShrink: 0, opacity: draggedTaskId === t.id ? 0.4 : 1, outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 2 } }}>
+                      <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
+                          <IconButton size="small" sx={{ p: 0.25, ml: 0.5 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                        </Box>
+                        <Stack direction="row" spacing={0.5}>
+                          {pChip(t.priority)}
+                          {subs.length > 0 && <Chip label={subs.filter(s => s.status === 'done').length + '/' + subs.length + ' pod.'} size="small" variant="outlined" sx={{ fontSize: '0.62rem' }} />}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </Box>
+            </Box>
+          );
+        })}
+      </Box>
+      {tasks.filter(t => expandedUkoly.has(t.id)).map(t => {
+        const subs = t.subtasks || [];
+        const tc = TASK_CFG[t.status] || TASK_CFG.backlog;
         return (
-          <Box key={status} sx={{ display: 'flex', mb: 1.5, borderRadius: 2, overflow: 'hidden' }}
-            onDragOver={e => { e.preventDefault(); setDragOverCol(status); }}
-            onDragLeave={() => setDragOverCol(null)}
-            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); }}>
-            <Box sx={{ minWidth: 130, p: 1.5, bgcolor: cfg.bg, display: 'flex', alignItems: 'center', borderLeft: '3px solid ' + cfg.color }}>
-              <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({rowTasks.length})</Typography>
+          <Paper key={'sub-' + t.id} sx={{ p: 2, mb: 2, borderRadius: 2, borderLeft: '4px solid ' + tc.color }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+              <Typography variant="subtitle1" fontWeight={700}>
+                <SubdirectoryArrowRight fontSize="small" sx={{ mr: 0.5, verticalAlign: 'middle' }} />
+                Pod-úkoly: {t.title}
+              </Typography>
+              <Button size="small" startIcon={<Add fontSize="small" />} onClick={() => openTaskDialog(null, t.id)}>
+                Přidat pod-úkol
+              </Button>
             </Box>
-            <Box sx={{ display: 'flex', gap: 1, p: 1, flex: 1, overflowX: 'auto', minHeight: 60, bgcolor: dragOverCol === status ? '#e8f5e960' : 'transparent' }}>
-              {rowTasks.map(t => (
-                <Card key={t.id} draggable
-                  onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
-                  onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
-                  onClick={() => openTaskDialog(t)}
-                  sx={{ minWidth: 180, cursor: 'grab', borderRadius: 1.5, flexShrink: 0, opacity: draggedTaskId === t.id ? 0.4 : 1, '&:hover': { boxShadow: 2 } }}>
-                  <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-                    <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>{t.title}</Typography>
-                    {pChip(t.priority)}
-                  </CardContent>
-                </Card>
-              ))}
-            </Box>
-          </Box>
+            {subs.length > 0 ? renderSubTasks(subs, t.id, t.title) : (
+              <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>Zatím žádné pod-úkoly.</Typography>
+            )}
+          </Paper>
         );
       })}
-    </Box>
+    </>
   );
+
+  // ======== DOC DETAIL PANEL ========
+  const renderDocDetail = () => {
+    if (!docDetailTask) return null;
+    return (
+      <Dialog open={!!docDetailTask} onClose={() => { setDocDetailTask(null); setDocContent(null); }} maxWidth="md" fullWidth>
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <MenuBook fontSize="small" />
+            {docDetailTask.title}
+          </Box>
+          <Stack direction="row" spacing={0.5}>
+            {sChip(docDetailTask.status, TASK_CFG)} {pChip(docDetailTask.priority)}
+            <IconButton size="small" onClick={() => { setDocDetailTask(null); openTaskDialog(docDetailTask); }}><Edit fontSize="small" /></IconButton>
+          </Stack>
+        </DialogTitle>
+        <DialogContent>
+          {docLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}><CircularProgress /></Box>
+          ) : docContent ? (
+            <Box sx={{ fontFamily: 'system-ui, sans-serif', fontSize: '0.9rem', lineHeight: 1.7, '& h1': { fontSize: '1.4rem', fontWeight: 700, mt: 2, mb: 1, color: COLORS.darkForest }, '& h2': { fontSize: '1.15rem', fontWeight: 700, mt: 2, mb: 0.5, color: '#333' }, '& h3': { fontSize: '1rem', fontWeight: 600, mt: 1.5, mb: 0.5 }, '& ul, & ol': { pl: 3 }, '& li': { mb: 0.5 }, '& code': { bgcolor: '#f5f5f5', px: 0.5, borderRadius: 0.5, fontFamily: 'monospace', fontSize: '0.85em' }, '& pre': { bgcolor: '#f5f5f5', p: 2, borderRadius: 1, overflow: 'auto', '& code': { bgcolor: 'transparent', p: 0 } }, '& table': { borderCollapse: 'collapse', width: '100%', mb: 2, '& th, & td': { border: '1px solid #ddd', p: 1, textAlign: 'left' }, '& th': { bgcolor: '#f5f5f5', fontWeight: 600 } }, '& hr': { my: 2, border: 'none', borderTop: '1px solid #e0e0e0' }, '& blockquote': { borderLeft: '3px solid ' + COLORS.emerald, pl: 2, ml: 0, color: '#555', fontStyle: 'italic' } }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(docContent) }}
+            />
+          ) : (
+            <Paper sx={{ p: 3, textAlign: 'center', bgcolor: '#fafafa', borderRadius: 2 }}>
+              <Typography color="text.secondary">
+                Pro tento pod-úkol nebyla nalezena dokumentace.
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                Vytvořte soubor v docs/{selectedProject?.docs_repo}/ pro propojení.
+              </Typography>
+            </Paper>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setDocDetailTask(null); setDocContent(null); }}>Zavřít</Button>
+        </DialogActions>
+      </Dialog>
+    );
+  };
+
+  // Simple markdown→HTML renderer
+  const renderMarkdown = (md: string): string => {
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const lines = md.split('\n');
+    let html = '';
+    let inList = false;
+    let inCode = false;
+    let inTable = false;
+    for (const line of lines) {
+      if (line.startsWith('```')) {
+        if (inCode) { html += '</code></pre>'; inCode = false; }
+        else { html += '<pre><code>'; inCode = true; }
+        continue;
+      }
+      if (inCode) { html += esc(line) + '\n'; continue; }
+      if (line.startsWith('|') && line.endsWith('|')) {
+        const cells = line.split('|').slice(1, -1).map(c => c.trim());
+        if (cells.every(c => /^[-:]+$/.test(c))) continue;
+        if (!inTable) { html += '<table>'; inTable = true; }
+        const isHeader = !inTable || html.endsWith('<table>');
+        const tag = isHeader ? 'th' : 'td';
+        html += '<tr>' + cells.map(c => `<${tag}>${esc(c)}</${tag}>`).join('') + '</tr>';
+        continue;
+      }
+      if (inTable && !line.startsWith('|')) { html += '</table>'; inTable = false; }
+      if (/^#{1,3} /.test(line)) {
+        if (inList) { html += '</ul>'; inList = false; }
+        const lvl = line.match(/^#+/)![0].length;
+        html += `<h${lvl}>${esc(line.replace(/^#+\s*/, ''))}</h${lvl}>`;
+      } else if (/^[-*] /.test(line)) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        const content = line.replace(/^[-*] /, '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        const checked = content.startsWith('[x] ') ? '☑ ' : content.startsWith('[ ] ') ? '☐ ' : '';
+        const text = checked ? content.slice(4) : content;
+        html += `<li>${checked}${esc(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')}</li>`;
+      } else if (line.startsWith('> ')) {
+        if (inList) { html += '</ul>'; inList = false; }
+        html += `<blockquote>${esc(line.slice(2))}</blockquote>`;
+      } else if (line.startsWith('---')) {
+        if (inList) { html += '</ul>'; inList = false; }
+        html += '<hr>';
+      } else if (line.trim() === '') {
+        if (inList) { html += '</ul>'; inList = false; }
+        html += '<br>';
+      } else {
+        if (inList) { html += '</ul>'; inList = false; }
+        html += `<p>${esc(line).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>')}</p>`;
+      }
+    }
+    if (inList) html += '</ul>';
+    if (inCode) html += '</code></pre>';
+    if (inTable) html += '</table>';
+    return html;
+  };
 
   // ======== PROJECT PAGE ========
   const renderProjectPage = () => {
@@ -765,6 +1062,8 @@ export default function ProjectsDashboard() {
         </DialogContent>
         <DialogActions><Button onClick={() => setLabelsDialogOpen(false)}>Zavřít</Button></DialogActions>
       </Dialog>
+
+      {renderDocDetail()}
 
       <Snackbar open={snackbar.open} autoHideDuration={4000} onClose={() => setSnackbar(p => ({ ...p, open: false }))} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
         <Alert severity={snackbar.severity} variant="filled" onClose={() => setSnackbar(p => ({ ...p, open: false }))}>{snackbar.message}</Alert>
