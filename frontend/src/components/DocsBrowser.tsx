@@ -67,8 +67,12 @@ export default function DocsBrowser({ repo, projectId, onBack, onTasksChanged }:
       if (projectId) {
         try {
           const syncResult = await docsApi.syncTasks(repo, projectId);
-          if (syncResult.created_parents.length > 0 || syncResult.created_subtasks.length > 0) {
+          const hasChanges = syncResult.created_parents.length > 0 || syncResult.created_subtasks.length > 0;
+          if (hasChanges) {
             setSnackbar({ open: true, message: syncResult.summary, severity: 'info' });
+          }
+          // Always notify parent to refresh phases (canvas might have changed)
+          if (hasChanges || result.pulled) {
             onTasksChanged?.();
           }
         } catch {

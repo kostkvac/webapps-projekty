@@ -257,7 +257,11 @@ export interface TaskSyncResult {
   status: string;
   created_parents: string[];
   created_subtasks: string[];
-  renamed_subtasks: string[];
+  phases: {
+    total_phases: number;
+    phases: PhaseInfo[];
+    unassigned_subtasks: number;
+  } | null;
   summary: string;
 }
 

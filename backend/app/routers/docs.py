@@ -280,10 +280,11 @@ def _find_matching_parent(folder_name: str, parent_tasks: list[Task]) -> Task | 
 @router.post("/docs/{repo}/sync-tasks")
 async def sync_tasks(repo: str, project_id: int, db: Session = Depends(get_db)):
     """
-    Sync doc folders/files with project tasks.
+    Sync doc folders/files with project tasks, then match phases from canvas.
     - Each folder → parent task (Úkol)
     - Each .md file → subtask (Pod-úkol)
-    Creates missing tasks, renames changed ones. Never deletes.
+    - Canvas phases → subtask phase assignments
+    Creates missing tasks. Never deletes.
     """
     repo_path = _safe_path(repo)
     project = db.query(Project).filter(Project.id == project_id).first()
@@ -300,7 +301,6 @@ async def sync_tasks(repo: str, project_id: int, db: Session = Depends(get_db)):
     doc_folders = _scan_doc_folders(repo_path)
     created_parents: list[str] = []
     created_subtasks: list[str] = []
-    renamed_subtasks: list[str] = []
 
     for folder_name, file_stems in doc_folders.items():
         # Find or create parent task
@@ -357,27 +357,71 @@ async def sync_tasks(repo: str, project_id: int, db: Session = Depends(get_db)):
 
     db.commit()
 
+    # --- Phase detection from canvas ---
+    phases_info = None
+    canvas_files = list(repo_path.glob("*.canvas"))
+    if canvas_files:
+        # Re-load parent tasks with fresh subtask IDs (after commit)
+        parent_tasks = (
+            db.query(Task)
+            .options(joinedload(Task.subtasks))
+            .filter(Task.project_id == project_id, Task.parent_task_id.is_(None))
+            .all()
+        )
+        canvas_phases = _parse_canvas_phases(canvas_files[0])
+        matched_ids: set[int] = set()
+        phase_results = []
+        for phase in canvas_phases:
+            task_ids = []
+            for doc_file in phase["doc_files"]:
+                tid = _match_doc_to_task(doc_file, parent_tasks, matched_ids)
+                if tid is not None:
+                    task_ids.append(tid)
+                    matched_ids.add(tid)
+            phase_results.append({
+                "number": phase["number"],
+                "label": phase["label"],
+                "task_ids": task_ids,
+            })
+
+        # Count subtasks not assigned to any phase
+        all_subtask_ids = {
+            s.id for pt in parent_tasks for s in (pt.subtasks or [])
+        }
+        unassigned_count = len(all_subtask_ids - matched_ids)
+
+        phases_info = {
+            "total_phases": len(phase_results),
+            "phases": phase_results,
+            "unassigned_subtasks": unassigned_count,
+        }
+
     return {
         "status": "ok",
         "created_parents": created_parents,
         "created_subtasks": created_subtasks,
-        "renamed_subtasks": renamed_subtasks,
-        "summary": _build_sync_summary(created_parents, created_subtasks, renamed_subtasks),
+        "phases": phases_info,
+        "summary": _build_sync_summary(created_parents, created_subtasks, phases_info),
     }
 
 
 def _build_sync_summary(
     created_parents: list[str],
     created_subtasks: list[str],
-    renamed_subtasks: list[str],
+    phases_info: dict | None,
 ) -> str:
     parts = []
     if created_parents:
         parts.append(f"Vytvořeno {len(created_parents)} nových úkolů: {', '.join(created_parents)}")
     if created_subtasks:
         parts.append(f"Vytvořeno {len(created_subtasks)} nových pod-úkolů: {', '.join(created_subtasks)}")
-    if renamed_subtasks:
-        parts.append(f"Přejmenováno {len(renamed_subtasks)} pod-úkolů")
+    if phases_info:
+        n = phases_info["total_phases"]
+        ua = phases_info["unassigned_subtasks"]
+        if created_parents or created_subtasks:
+            parts.append(f"{n} fází v canvasu")
+        if ua > 0:
+            parts.append(f"{ua} pod-úkolů bez přiřazené fáze")
     return "; ".join(parts) if parts else "Žádné změny"
 
 
