@@ -244,6 +244,23 @@ export interface GitSyncStatus {
   behind_count: number;
 }
 
+export interface CheckAndPullResult {
+  repo: string;
+  local_commit: string;
+  local_date: string;
+  is_synced: boolean;
+  pulled: boolean;
+  pull_output: string;
+}
+
+export interface TaskSyncResult {
+  status: string;
+  created_parents: string[];
+  created_subtasks: string[];
+  renamed_subtasks: string[];
+  summary: string;
+}
+
 export interface PhaseInfo {
   number: number;
   label: string;
@@ -277,6 +294,14 @@ export const docsApi = {
   },
   pullRepo: async (repo: string): Promise<{ status: string; output: string }> => {
     const r = await api.post<{ status: string; output: string }>(`/docs/${repo}/pull`);
+    return r.data;
+  },
+  checkAndPull: async (repo: string): Promise<CheckAndPullResult> => {
+    const r = await api.post<CheckAndPullResult>(`/docs/${repo}/check-and-pull`);
+    return r.data;
+  },
+  syncTasks: async (repo: string, projectId: number): Promise<TaskSyncResult> => {
+    const r = await api.post<TaskSyncResult>(`/docs/${repo}/sync-tasks`, null, { params: { project_id: projectId } });
     return r.data;
   },
   getPhases: async (repo: string, projectId: number): Promise<PhasesData> => {

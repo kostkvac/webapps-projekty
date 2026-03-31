@@ -1,5 +1,6 @@
 """Documentation browser API — serve markdown docs from git-cloned repos."""
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -12,9 +13,14 @@ from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models.project import Project, Task
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 DOCS_ROOT = Path("/opt/webapps/projekty/docs")
+
+# Folders to skip when scanning doc repos for task-mapping
+IGNORED_DIRS = {".git", ".obsidian", ".trash", "_resources", "assets", "attachments"}
 
 
 class DocFile(BaseModel):
@@ -187,6 +193,194 @@ async def pull_repo(repo: str):
     return {"status": "ok", "output": result.stdout.strip()}
 
 
+@router.post("/docs/{repo}/check-and-pull")
+async def check_and_pull(repo: str):
+    """Fetch remote, and if behind, auto-pull. Returns sync status + pull result."""
+    repo_path = _safe_path(repo)
+    git_dir = repo_path / ".git"
+    if not git_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Not a git repository")
+
+    def git(*args: str) -> str:
+        r = subprocess.run(
+            ["git", "-C", str(repo_path)] + list(args),
+            capture_output=True, text=True, timeout=15,
+        )
+        return r.stdout.strip()
+
+    local_commit_before = git("rev-parse", "HEAD")
+
+    # Fetch
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_path), "fetch", "--quiet"],
+            capture_output=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, Exception):
+        pass
+
+    branch = git("rev-parse", "--abbrev-ref", "HEAD") or "main"
+    remote_ref = f"origin/{branch}"
+    remote_commit = git("rev-parse", remote_ref)
+
+    pulled = False
+    pull_output = ""
+    if remote_commit and remote_commit != local_commit_before:
+        # Auto-pull
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            pulled = True
+            pull_output = result.stdout.strip()
+        else:
+            pull_output = result.stderr.strip()
+
+    local_commit = git("rev-parse", "HEAD")
+    local_date = git("log", "-1", "--format=%ci")
+
+    return {
+        "repo": repo,
+        "local_commit": local_commit[:8],
+        "local_date": local_date,
+        "is_synced": local_commit == remote_commit,
+        "pulled": pulled,
+        "pull_output": pull_output,
+    }
+
+
+# ==================== TASK SYNC FROM DOCS ====================
+
+def _scan_doc_folders(repo_path: Path) -> dict[str, list[str]]:
+    """Scan repo for folders containing .md files. Returns {folder_name: [file_stems]}."""
+    result: dict[str, list[str]] = {}
+    for entry in sorted(repo_path.iterdir()):
+        if not entry.is_dir() or entry.name in IGNORED_DIRS or entry.name.startswith("."):
+            continue
+        md_files = sorted(
+            f.stem for f in entry.iterdir()
+            if f.is_file() and f.suffix.lower() == ".md"
+        )
+        if md_files:
+            result[entry.name] = md_files
+    return result
+
+
+def _find_matching_parent(folder_name: str, parent_tasks: list[Task]) -> Task | None:
+    """Find parent task that matches folder name (case-insensitive substring)."""
+    fl = folder_name.lower()
+    for pt in parent_tasks:
+        pl = pt.title.lower()
+        if fl == pl or fl in pl or pl in fl:
+            return pt
+    return None
+
+
+@router.post("/docs/{repo}/sync-tasks")
+async def sync_tasks(repo: str, project_id: int, db: Session = Depends(get_db)):
+    """
+    Sync doc folders/files with project tasks.
+    - Each folder → parent task (Úkol)
+    - Each .md file → subtask (Pod-úkol)
+    Creates missing tasks, renames changed ones. Never deletes.
+    """
+    repo_path = _safe_path(repo)
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    parent_tasks = (
+        db.query(Task)
+        .options(joinedload(Task.subtasks))
+        .filter(Task.project_id == project_id, Task.parent_task_id.is_(None))
+        .all()
+    )
+
+    doc_folders = _scan_doc_folders(repo_path)
+    created_parents: list[str] = []
+    created_subtasks: list[str] = []
+    renamed_subtasks: list[str] = []
+
+    for folder_name, file_stems in doc_folders.items():
+        # Find or create parent task
+        parent = _find_matching_parent(folder_name, parent_tasks)
+        if parent is None:
+            parent = Task(
+                project_id=project_id,
+                title=folder_name,
+                status="backlog",
+                priority="medium",
+                task_type="task",
+                created_by="docs-sync",
+            )
+            db.add(parent)
+            db.flush()  # get ID
+            parent_tasks.append(parent)
+            created_parents.append(folder_name)
+            logger.info(f"Created parent task: {folder_name}")
+
+        # Existing subtask titles (lowered) for matching
+        existing_subs = list(parent.subtasks or [])
+        existing_titles_lower = {s.title.lower(): s for s in existing_subs}
+
+        for file_stem in file_stems:
+            fs_lower = file_stem.lower()
+            # Exact match (case-insensitive)
+            if fs_lower in existing_titles_lower:
+                continue
+            # Substring match: file_stem is contained in or contains existing title
+            matched = False
+            for sub in existing_subs:
+                sl = sub.title.lower()
+                if fs_lower in sl or sl in fs_lower:
+                    matched = True
+                    break
+            if matched:
+                continue
+
+            # No match → create new subtask
+            new_sub = Task(
+                project_id=project_id,
+                parent_task_id=parent.id,
+                title=file_stem,
+                status="backlog",
+                priority="medium",
+                task_type="task",
+                created_by="docs-sync",
+            )
+            db.add(new_sub)
+            existing_subs.append(new_sub)
+            existing_titles_lower[fs_lower] = new_sub
+            created_subtasks.append(f"{folder_name}/{file_stem}")
+            logger.info(f"Created subtask: {folder_name}/{file_stem}")
+
+    db.commit()
+
+    return {
+        "status": "ok",
+        "created_parents": created_parents,
+        "created_subtasks": created_subtasks,
+        "renamed_subtasks": renamed_subtasks,
+        "summary": _build_sync_summary(created_parents, created_subtasks, renamed_subtasks),
+    }
+
+
+def _build_sync_summary(
+    created_parents: list[str],
+    created_subtasks: list[str],
+    renamed_subtasks: list[str],
+) -> str:
+    parts = []
+    if created_parents:
+        parts.append(f"Vytvořeno {len(created_parents)} nových úkolů: {', '.join(created_parents)}")
+    if created_subtasks:
+        parts.append(f"Vytvořeno {len(created_subtasks)} nových pod-úkolů: {', '.join(created_subtasks)}")
+    if renamed_subtasks:
+        parts.append(f"Přejmenováno {len(renamed_subtasks)} pod-úkolů")
+    return "; ".join(parts) if parts else "Žádné změny"
+
+
 # ==================== CANVAS PHASES ====================
 
 def _parse_canvas_phases(canvas_path: Path) -> list[dict]:
@@ -246,17 +440,9 @@ def _match_doc_to_task(doc_file: str, parent_tasks: list, matched_ids: set) -> i
     for parent in parent_tasks:
         if not _fuzzy_match(folder_name, parent.title):
             continue
-        # Exact/strong fuzzy match first
         for sub in (parent.subtasks or []):
             if sub.id not in matched_ids and _fuzzy_match(file_stem, sub.title):
                 return sub.id
-        # Fallback: match if any significant word (>3 chars) from file stem appears in subtask title
-        stem_words = [w for w in file_stem.lower().split() if len(w) > 3]
-        for sub in (parent.subtasks or []):
-            if sub.id not in matched_ids:
-                sub_lower = sub.title.lower()
-                if any(w in sub_lower for w in stem_words):
-                    return sub.id
     return None
 
 

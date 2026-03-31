@@ -4,6 +4,7 @@ import { Assignment, MenuBook, CloudDone, SyncProblem } from '@mui/icons-materia
 import ProjectsDashboard from './components/ProjectsDashboard';
 import DocsBrowser from './components/DocsBrowser';
 import { docsApi } from './api/projects';
+import projectsApi from './api/projects';
 
 const theme = createTheme({
   palette: {
@@ -22,6 +23,8 @@ export default function App() {
   const [docsRepos, setDocsRepos] = useState<string[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
   const [syncStatuses, setSyncStatuses] = useState<Record<string, boolean>>({});
+  const [repoProjectMap, setRepoProjectMap] = useState<Record<string, number>>({});
+  const [dashboardKey, setDashboardKey] = useState(0);
 
   const loadRepos = useCallback(async () => {
     try {
@@ -35,6 +38,15 @@ export default function App() {
         } catch { /* skip */ }
       }
       setSyncStatuses(statuses);
+      // Load project-repo mapping
+      try {
+        const projects = await projectsApi.list();
+        const mapping: Record<string, number> = {};
+        for (const p of projects) {
+          if (p.docs_repo) mapping[p.docs_repo] = p.id;
+        }
+        setRepoProjectMap(mapping);
+      } catch { /* skip */ }
     } catch { /* skip */ }
   }, []);
 
@@ -67,11 +79,16 @@ export default function App() {
           />
         </Tabs>
       </Box>
-      {tab === 0 && <ProjectsDashboard />}
+      {tab === 0 && <ProjectsDashboard key={dashboardKey} />}
       {tab === 1 && (
         <Box sx={{ px: 3, py: 2, maxWidth: 1600, mx: 'auto' }}>
           {selectedRepo ? (
-            <DocsBrowser repo={selectedRepo} onBack={() => { setSelectedRepo(null); loadRepos(); }} />
+            <DocsBrowser
+              repo={selectedRepo}
+              projectId={repoProjectMap[selectedRepo]}
+              onBack={() => { setSelectedRepo(null); loadRepos(); }}
+              onTasksChanged={() => setDashboardKey(k => k + 1)}
+            />
           ) : (
             <Box>
               <Box sx={{ mb: 3 }}>

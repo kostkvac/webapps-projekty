@@ -12,7 +12,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { docsApi } from '../api/projects';
-import type { DocFile, DocContent, GitSyncStatus } from '../api/projects';
+import type { DocFile, DocContent, CheckAndPullResult } from '../api/projects';
 
 const COLORS = {
   darkForest: '#00472e',
@@ -21,18 +21,19 @@ const COLORS = {
 
 interface Props {
   repo: string;
+  projectId?: number;
   onBack: () => void;
+  onTasksChanged?: () => void;
 }
 
-export default function DocsBrowser({ repo, onBack }: Props) {
+export default function DocsBrowser({ repo, projectId, onBack, onTasksChanged }: Props) {
   const [files, setFiles] = useState<DocFile[]>([]);
   const [currentDir, setCurrentDir] = useState('');
   const [docContent, setDocContent] = useState<DocContent | null>(null);
-  const [syncStatus, setSyncStatus] = useState<GitSyncStatus | null>(null);
+  const [syncInfo, setSyncInfo] = useState<CheckAndPullResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [pulling, setPulling] = useState(false);
-  const [syncChecking, setSyncChecking] = useState(false);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
+  const [syncing, setSyncing] = useState(false);
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
     open: false, message: '', severity: 'success',
   });
 
@@ -50,22 +51,41 @@ export default function DocsBrowser({ repo, onBack }: Props) {
     }
   }, [repo]);
 
-  const checkSync = useCallback(async () => {
-    setSyncChecking(true);
+  const checkAndSync = useCallback(async () => {
+    setSyncing(true);
     try {
-      const status = await docsApi.checkSync(repo);
-      setSyncStatus(status);
+      // Fetch + auto-pull if behind
+      const result = await docsApi.checkAndPull(repo);
+      setSyncInfo(result);
+
+      if (result.pulled) {
+        setSnackbar({ open: true, message: `Stáhnuta aktualizace: ${result.pull_output}`, severity: 'success' });
+        loadFiles(currentDir);
+      }
+
+      // Always sync tasks with docs (catches new files even without pull)
+      if (projectId) {
+        try {
+          const syncResult = await docsApi.syncTasks(repo, projectId);
+          if (syncResult.created_parents.length > 0 || syncResult.created_subtasks.length > 0) {
+            setSnackbar({ open: true, message: syncResult.summary, severity: 'info' });
+            onTasksChanged?.();
+          }
+        } catch {
+          // Task sync failed silently
+        }
+      }
     } catch {
       // Silently fail sync check
     } finally {
-      setSyncChecking(false);
+      setSyncing(false);
     }
-  }, [repo]);
+  }, [repo, projectId, currentDir, loadFiles, onTasksChanged]);
 
   useEffect(() => {
     loadFiles();
-    checkSync();
-  }, [loadFiles, checkSync]);
+    checkAndSync();
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleOpenFile = async (file: DocFile) => {
     if (file.is_dir) {
@@ -84,16 +104,17 @@ export default function DocsBrowser({ repo, onBack }: Props) {
   };
 
   const handlePull = async () => {
-    setPulling(true);
+    setSyncing(true);
     try {
       const result = await docsApi.pullRepo(repo);
-      setSnackbar({ open: true, message: `Updated: ${result.output}`, severity: 'success' });
-      checkSync();
+      setSnackbar({ open: true, message: `Aktualizováno: ${result.output}`, severity: 'success' });
+      // Re-check + sync tasks
+      await checkAndSync();
       loadFiles(currentDir);
     } catch {
-      setSnackbar({ open: true, message: 'Pull failed', severity: 'error' });
+      setSnackbar({ open: true, message: 'Aktualizace selhala', severity: 'error' });
     } finally {
-      setPulling(false);
+      setSyncing(false);
     }
   };
 
@@ -127,18 +148,18 @@ export default function DocsBrowser({ repo, onBack }: Props) {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} alignItems="center">
-            {syncStatus && (
+            {syncInfo && (
               <Tooltip title={
-                syncStatus.is_synced
-                  ? `In sync — commit ${syncStatus.local_commit} (${new Date(syncStatus.local_date).toLocaleDateString()})`
-                  : `${syncStatus.behind_count} commit(s) behind remote`
+                syncInfo.is_synced
+                  ? `Synchronizováno — commit ${syncInfo.local_commit}`
+                  : 'Nesynchronizováno s remote'
               }>
                 <Chip
                   size="small"
-                  icon={syncStatus.is_synced ? <CloudDone fontSize="small" /> : <SyncProblem fontSize="small" />}
-                  label={syncStatus.is_synced ? 'Synced' : `${syncStatus.behind_count} behind`}
+                  icon={syncInfo.is_synced ? <CloudDone fontSize="small" /> : <SyncProblem fontSize="small" />}
+                  label={syncInfo.is_synced ? 'Synced' : 'Out of sync'}
                   sx={{
-                    bgcolor: syncStatus.is_synced ? 'rgba(255,255,255,0.2)' : '#ff980055',
+                    bgcolor: syncInfo.is_synced ? 'rgba(255,255,255,0.2)' : '#ff980055',
                     color: 'white',
                     fontWeight: 600,
                     '& .MuiChip-icon': { color: 'white' },
@@ -146,16 +167,16 @@ export default function DocsBrowser({ repo, onBack }: Props) {
                 />
               </Tooltip>
             )}
-            <Tooltip title="Check for updates">
-              <IconButton size="small" onClick={checkSync} disabled={syncChecking} sx={{ color: 'white' }}>
-                <Sync fontSize="small" sx={{ animation: syncChecking ? 'spin 1s linear infinite' : 'none', '@keyframes spin': { '0%': { transform: 'rotate(0deg)' }, '100%': { transform: 'rotate(360deg)' } } }} />
+            <Tooltip title="Zkontrolovat a stáhnout aktualizace">
+              <IconButton size="small" onClick={checkAndSync} disabled={syncing} sx={{ color: 'white' }}>
+                <Sync fontSize="small" sx={{ animation: syncing ? 'spin 1s linear infinite' : 'none', '@keyframes spin': { '0%': { transform: 'rotate(0deg)' }, '100%': { transform: 'rotate(360deg)' } } }} />
               </IconButton>
             </Tooltip>
-            {syncStatus && !syncStatus.is_synced && (
+            {syncInfo && !syncInfo.is_synced && (
               <Button
                 size="small" variant="contained"
-                startIcon={pulling ? <CircularProgress size={14} color="inherit" /> : <CloudDownload fontSize="small" />}
-                onClick={handlePull} disabled={pulling}
+                startIcon={syncing ? <CircularProgress size={14} color="inherit" /> : <CloudDownload fontSize="small" />}
+                onClick={handlePull} disabled={syncing}
                 sx={{ bgcolor: 'rgba(255,255,255,0.2)', '&:hover': { bgcolor: 'rgba(255,255,255,0.3)' } }}
               >
                 Pull
@@ -163,18 +184,18 @@ export default function DocsBrowser({ repo, onBack }: Props) {
             )}
           </Stack>
         </Box>
-        {syncStatus && (
+        {syncInfo && (
           <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
             <Chip
               size="small"
               icon={<Schedule fontSize="small" />}
-              label={`Last commit: ${new Date(syncStatus.local_date).toLocaleString()}`}
+              label={`Poslední commit: ${new Date(syncInfo.local_date).toLocaleString()}`}
               sx={{ bgcolor: 'rgba(255,255,255,0.15)', color: 'white', fontSize: '0.7rem', '& .MuiChip-icon': { color: 'white' } }}
             />
             <Chip
               size="small"
               icon={<CheckCircle fontSize="small" />}
-              label={syncStatus.local_commit}
+              label={syncInfo.local_commit}
               sx={{ bgcolor: 'rgba(255,255,255,0.15)', color: 'white', fontSize: '0.7rem', fontFamily: 'monospace', '& .MuiChip-icon': { color: 'white' } }}
             />
           </Stack>
