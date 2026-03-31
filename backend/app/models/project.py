@@ -43,6 +43,7 @@ class Project(Base):
     estimated_hours = Column(Float)
     actual_hours = Column(Float, default=0)
     target_date = Column(Date)
+    current_phase = Column(Integer, default=1)
     created_by = Column(String(100))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

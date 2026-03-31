@@ -14,6 +14,7 @@ export interface Project {
   actual_hours: number | null;
   progress_percent: number;
   target_date: string | null;
+  current_phase: number;
   created_at: string | null;
   updated_at: string | null;
   created_by: string | null;
@@ -243,6 +244,17 @@ export interface GitSyncStatus {
   behind_count: number;
 }
 
+export interface PhaseInfo {
+  number: number;
+  label: string;
+  task_ids: number[];
+}
+
+export interface PhasesData {
+  current_phase: number;
+  phases: PhaseInfo[];
+}
+
 export const docsApi = {
   listRepos: async (): Promise<string[]> => {
     const r = await api.get<string[]>('/docs/repos');
@@ -265,6 +277,10 @@ export const docsApi = {
   },
   pullRepo: async (repo: string): Promise<{ status: string; output: string }> => {
     const r = await api.post<{ status: string; output: string }>(`/docs/${repo}/pull`);
+    return r.data;
+  },
+  getPhases: async (repo: string, projectId: number): Promise<PhasesData> => {
+    const r = await api.get<PhasesData>(`/docs/${repo}/phases`, { params: { project_id: projectId } });
     return r.data;
   },
 };

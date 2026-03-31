@@ -21,7 +21,7 @@ import {
 } from '@mui/icons-material';
 import projectsApi from '../api/projects';
 import { docsApi } from '../api/projects';
-import type { Project, Task, ProjectDetail, Label, TaskNote, TaskAudit, DocFile } from '../api/projects';
+import type { Project, Task, ProjectDetail, Label, TaskNote, TaskAudit, DocFile, PhasesData, PhaseInfo } from '../api/projects';
 
 const COLORS = { darkForest: '#00472e', emerald: '#007638' };
 
@@ -88,6 +88,7 @@ export default function ProjectsDashboard() {
   const [docPath, setDocPath] = useState<string | null>(null);
   const [docLoading, setDocLoading] = useState(false);
   const [docFiles, setDocFiles] = useState<Record<string, DocFile[]>>({});
+  const [phasesData, setPhasesData] = useState<PhasesData | null>(null);
 
   const findDocFile = async (task: Task, parentTitle: string): Promise<string | null> => {
     if (!selectedProject?.docs_repo) return null;
@@ -198,6 +199,42 @@ export default function ProjectsDashboard() {
     setExpandedUkoly(new Set());
   };
 
+  // Load phases whenever selectedProject changes and has docs_repo
+  useEffect(() => {
+    if (selectedProject?.docs_repo) {
+      docsApi.getPhases(selectedProject.docs_repo, selectedProject.id)
+        .then(data => setPhasesData(data))
+        .catch(() => setPhasesData(null));
+    } else {
+      setPhasesData(null);
+    }
+  }, [selectedProject]);
+
+  // Phase helpers
+  const getTaskPhase = (taskId: number): PhaseInfo | null => {
+    if (!phasesData) return null;
+    return phasesData.phases.find(p => p.task_ids.includes(taskId)) || null;
+  };
+
+  const isTaskInActivePhase = (taskId: number): boolean => {
+    if (!phasesData) return true; // No phases = no restrictions
+    const phase = getTaskPhase(taskId);
+    if (!phase) return true; // Unassigned tasks are unrestricted
+    return phase.number <= phasesData.current_phase;
+  };
+
+  const ACTIVE_STATUSES = ['in_progress', 'testing', 'done'];
+
+  const setCurrentPhase = async (phase: number) => {
+    if (!selectedProject) return;
+    try {
+      await projectsApi.update(selectedProject.id, { current_phase: phase } as any);
+      setPhasesData(prev => prev ? { ...prev, current_phase: phase } : prev);
+      setSelectedProject(prev => prev ? { ...prev, current_phase: phase } : prev);
+      showSnack(`Aktuální fáze nastavena na ${phase}`);
+    } catch { showSnack('Nepodařilo se změnit fázi', 'error'); }
+  };
+
   const goBack = () => {
     setView('overview');
     setSelectedProject(null);
@@ -264,6 +301,11 @@ export default function ProjectsDashboard() {
   };
 
   const quickStatus = async (taskId: number, newStatus: string) => {
+    // Phase restriction: block active statuses for tasks not in current phase
+    if (ACTIVE_STATUSES.includes(newStatus) && !isTaskInActivePhase(taskId)) {
+      showSnack('Tento úkol není v aktuální fázi — nelze přesunout do aktivního stavu', 'error');
+      return;
+    }
     try {
       await projectsApi.updateTask(taskId, { status: newStatus } as any);
       if (selectedProject) loadProjectDetail(selectedProject.id);
@@ -441,6 +483,9 @@ export default function ProjectsDashboard() {
     </Box>
   );
 
+  // Phase colors for visual distinction
+  const PHASE_COLORS = ['#9c27b0', '#1565c0', '#2e7d32', '#e65100', '#c62828', '#00838f'];
+
   // ======== SUB-KANBAN (Pod-úkoly) ========
   const renderSubKanban = (subs: Task[], parentId: number, parentTitle: string) => (
     <Box sx={{ display: 'flex', gap: 1.5, overflowX: 'auto', pb: 1, pt: 1 }}>
@@ -449,6 +494,7 @@ export default function ProjectsDashboard() {
         const colKey = `sub_${parentId}_${status}`;
         const colTasks = subs.filter(t => t.status === status);
         if (colTasks.length === 0 && !['backlog', 'todo', 'in_progress', 'done'].includes(status)) return null;
+        const isActiveCol = ACTIVE_STATUSES.includes(status);
         return (
           <Paper key={status} sx={{ minWidth: 170, flex: '0 0 170px', borderRadius: 1.5, bgcolor: dragOverCol === colKey ? '#e8f5e9' : '#fff', border: '1px solid #e8e8e8' }}
             onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); }}
@@ -458,15 +504,23 @@ export default function ProjectsDashboard() {
               <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({colTasks.length})</Typography>
             </Box>
             <Box sx={{ p: 0.75, minHeight: 50 }}>
-              {colTasks.map(sub => (
-                <Card key={sub.id} draggable
-                  onDragStart={e => { setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
+              {colTasks.map(sub => {
+                const phase = getTaskPhase(sub.id);
+                const active = isTaskInActivePhase(sub.id);
+                const phColor = phase ? PHASE_COLORS[(phase.number - 1) % PHASE_COLORS.length] : undefined;
+                const blocked = !active && isActiveCol;
+                return (
+                <Card key={sub.id} draggable={!blocked}
+                  onDragStart={e => { if (blocked) { e.preventDefault(); return; } setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
                   onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
                   onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
-                  sx={{ mb: 0.75, cursor: 'pointer', borderRadius: 1, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
-                    opacity: draggedTaskId === sub.id ? 0.4 : 1, '&:hover': { boxShadow: 2 } }}>
+                  sx={{ mb: 0.75, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
+                    opacity: draggedTaskId === sub.id ? 0.4 : !active ? 0.45 : 1, filter: !active ? 'grayscale(0.5)' : 'none', '&:hover': { boxShadow: active ? 2 : 0 } }}>
                   <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
-                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 0.25 }}>{sub.title}</Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
+                      {phase && <Chip label={`F${phase.number}`} size="small" sx={{ height: 16, fontSize: '0.6rem', fontWeight: 700, bgcolor: phColor + '22', color: phColor, '& .MuiChip-label': { px: 0.5 } }} />}
+                      <Typography variant="caption" fontWeight={600} sx={{ flex: 1 }}>{sub.title}</Typography>
+                    </Box>
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       {pChip(sub.priority)}
                       <Box sx={{ ml: 'auto' }}>
@@ -476,7 +530,8 @@ export default function ProjectsDashboard() {
                     </Stack>
                   </CardContent>
                 </Card>
-              ))}
+                );
+              })}
             </Box>
           </Paper>
         );
@@ -492,6 +547,7 @@ export default function ProjectsDashboard() {
         const colKey = `sub_${parentId}_${status}`;
         const rowTasks = subs.filter(t => t.status === status);
         if (rowTasks.length === 0 && !['backlog', 'todo', 'in_progress', 'done'].includes(status)) return null;
+        const isActiveCol = ACTIVE_STATUSES.includes(status);
         return (
           <Box key={status} sx={{ display: 'flex', mb: 1, borderRadius: 1.5, overflow: 'hidden' }}
             onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); }}
@@ -501,15 +557,23 @@ export default function ProjectsDashboard() {
               <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color, fontSize: '0.68rem' }}>{cfg.label} ({rowTasks.length})</Typography>
             </Box>
             <Box sx={{ display: 'flex', gap: 0.75, p: 0.75, flex: 1, overflowX: 'auto', minHeight: 44, bgcolor: dragOverCol === colKey ? '#e8f5e960' : 'transparent' }}>
-              {rowTasks.map(sub => (
-                <Card key={sub.id} draggable
-                  onDragStart={e => { setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
+              {rowTasks.map(sub => {
+                const phase = getTaskPhase(sub.id);
+                const active = isTaskInActivePhase(sub.id);
+                const phColor = phase ? PHASE_COLORS[(phase.number - 1) % PHASE_COLORS.length] : undefined;
+                const blocked = !active && isActiveCol;
+                return (
+                <Card key={sub.id} draggable={!blocked}
+                  onDragStart={e => { if (blocked) { e.preventDefault(); return; } setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
                   onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
                   onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
-                  sx={{ minWidth: 150, cursor: 'pointer', borderRadius: 1, flexShrink: 0, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
-                    opacity: draggedTaskId === sub.id ? 0.4 : 1, '&:hover': { boxShadow: 2 } }}>
+                  sx={{ minWidth: 150, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1, flexShrink: 0, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
+                    opacity: draggedTaskId === sub.id ? 0.4 : !active ? 0.45 : 1, filter: !active ? 'grayscale(0.5)' : 'none', '&:hover': { boxShadow: active ? 2 : 0 } }}>
                   <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
-                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 0.25 }}>{sub.title}</Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
+                      {phase && <Chip label={`F${phase.number}`} size="small" sx={{ height: 16, fontSize: '0.6rem', fontWeight: 700, bgcolor: phColor + '22', color: phColor, '& .MuiChip-label': { px: 0.5 } }} />}
+                      <Typography variant="caption" fontWeight={600} sx={{ flex: 1 }}>{sub.title}</Typography>
+                    </Box>
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       {pChip(sub.priority)}
                       <Box sx={{ ml: 'auto' }}>
@@ -518,7 +582,8 @@ export default function ProjectsDashboard() {
                     </Stack>
                   </CardContent>
                 </Card>
-              ))}
+                );
+              })}
             </Box>
           </Box>
         );
@@ -849,6 +914,46 @@ export default function ProjectsDashboard() {
             </Box>
           )}
         </Paper>
+
+        {/* Phase stepper */}
+        {phasesData && phasesData.phases.length > 0 && (
+          <Paper sx={{ p: 2, mb: 3, borderRadius: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ color: COLORS.darkForest, whiteSpace: 'nowrap' }}>
+                Projektové fáze
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0.5, flex: 1, overflowX: 'auto' }}>
+                {phasesData.phases.map(phase => {
+                  const isCurrent = phase.number === phasesData.current_phase;
+                  const isPast = phase.number < phasesData.current_phase;
+                  const phColor = PHASE_COLORS[(phase.number - 1) % PHASE_COLORS.length];
+                  const phaseDone = phase.task_ids.every(id => {
+                    const t = allTasks.find(at => at.id === id);
+                    return t?.status === 'done';
+                  });
+                  return (
+                    <Chip
+                      key={phase.number}
+                      label={`${phase.label} (${phase.task_ids.length})`}
+                      size="small"
+                      icon={isPast || phaseDone ? <Done sx={{ fontSize: 14 }} /> : isCurrent ? <PlayArrow sx={{ fontSize: 14 }} /> : undefined}
+                      onClick={() => setCurrentPhase(phase.number)}
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        bgcolor: isCurrent ? phColor : isPast ? phColor + '22' : '#f5f5f5',
+                        color: isCurrent ? '#fff' : isPast ? phColor : '#888',
+                        border: isCurrent ? 'none' : '1px solid ' + (isPast ? phColor + '44' : '#ddd'),
+                        cursor: 'pointer',
+                        '&:hover': { bgcolor: isCurrent ? phColor : phColor + '33' },
+                      }}
+                    />
+                  );
+                })}
+              </Box>
+            </Box>
+          </Paper>
+        )}
 
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Typography variant="h5" fontWeight={700} sx={{ color: COLORS.darkForest }}>Úkoly</Typography>

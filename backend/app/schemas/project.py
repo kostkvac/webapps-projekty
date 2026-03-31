@@ -186,6 +186,7 @@ class ProjectUpdate(BaseModel):
     estimated_hours: Optional[float] = None
     actual_hours: Optional[float] = None
     target_date: Optional[date] = None
+    current_phase: Optional[int] = None
     label_ids: Optional[List[int]] = None
 
 class ProjectResponse(BaseModel):
@@ -200,6 +201,7 @@ class ProjectResponse(BaseModel):
     estimated_hours: Optional[float] = None
     actual_hours: Optional[float] = None
     target_date: Optional[date] = None
+    current_phase: int = 1
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

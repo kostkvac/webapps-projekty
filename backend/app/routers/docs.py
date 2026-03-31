@@ -1,11 +1,16 @@
 """Documentation browser API — serve markdown docs from git-cloned repos."""
+import json
 import os
 import subprocess
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session, joinedload
+
+from app.database import get_db
+from app.models.project import Project, Task
 
 router = APIRouter()
 
@@ -180,3 +185,118 @@ async def pull_repo(repo: str):
         raise HTTPException(status_code=500, detail=f"Pull failed: {result.stderr.strip()}")
 
     return {"status": "ok", "output": result.stdout.strip()}
+
+
+# ==================== CANVAS PHASES ====================
+
+def _parse_canvas_phases(canvas_path: Path) -> list[dict]:
+    """Parse an Obsidian canvas file and return phase groups with their file nodes."""
+    data = json.loads(canvas_path.read_text(encoding="utf-8"))
+    nodes = data.get("nodes", [])
+
+    # Collect groups (phases) sorted by x position (left-to-right = chronological order)
+    groups = sorted(
+        [n for n in nodes if n["type"] == "group"],
+        key=lambda g: g["x"],
+    )
+
+    # Collect file nodes
+    file_nodes = [n for n in nodes if n["type"] == "file"]
+
+    # Assign file nodes to groups by checking if node position is within group bounds
+    phases = []
+    for idx, g in enumerate(groups, 1):
+        gx, gy, gw, gh = g["x"], g["y"], g["width"], g["height"]
+        files_in_phase = []
+        for f in file_nodes:
+            if gx <= f["x"] <= gx + gw and gy <= f["y"] <= gy + gh:
+                files_in_phase.append(f["file"])
+        phases.append({
+            "number": idx,
+            "label": g.get("label", f"Fáze {idx}"),
+            "doc_files": files_in_phase,
+        })
+
+    return phases
+
+
+def _fuzzy_match(text: str, candidate: str) -> bool:
+    """Check if text fuzzy-matches candidate (case-insensitive, word-level)."""
+    t = text.lower()
+    c = candidate.lower()
+    if t == c:
+        return True
+    if t in c or c in t:
+        return True
+    # Word-level: all significant words (>2 chars) from text appear in candidate
+    words = [w for w in t.split() if len(w) > 2]
+    if words and all(w in c for w in words):
+        return True
+    return False
+
+
+def _match_doc_to_task(doc_file: str, parent_tasks: list) -> int | None:
+    """Match a canvas doc_file path (e.g. 'Elektřina/Natáhnout kabel.md') to a subtask id."""
+    parts = doc_file.replace("\\", "/").split("/")
+    if len(parts) != 2:
+        return None
+    folder_name = parts[0]
+    file_stem = parts[1].replace(".md", "")
+
+    for parent in parent_tasks:
+        if not _fuzzy_match(folder_name, parent.title):
+            continue
+        for sub in (parent.subtasks or []):
+            if _fuzzy_match(file_stem, sub.title):
+                return sub.id
+    return None
+
+
+@router.get("/docs/{repo}/phases")
+async def get_phases(repo: str, project_id: int, db: Session = Depends(get_db)):
+    """Parse canvas phases and match them to project subtasks."""
+    repo_path = _safe_path(repo)
+
+    # Find canvas file
+    canvas_files = list(repo_path.glob("*.canvas"))
+    if not canvas_files:
+        raise HTTPException(status_code=404, detail="No .canvas file found")
+    canvas_path = canvas_files[0]  # Use first canvas file
+
+    # Parse phases from canvas
+    phases = _parse_canvas_phases(canvas_path)
+
+    # Load project with tasks
+    project = (
+        db.query(Project)
+        .filter(Project.id == project_id)
+        .first()
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    parent_tasks = (
+        db.query(Task)
+        .options(joinedload(Task.subtasks))
+        .filter(Task.project_id == project_id, Task.parent_task_id.is_(None))
+        .all()
+    )
+
+    # Match doc files to task IDs
+    result_phases = []
+    for phase in phases:
+        task_ids = []
+        for doc_file in phase["doc_files"]:
+            tid = _match_doc_to_task(doc_file, parent_tasks)
+            if tid is not None:
+                task_ids.append(tid)
+        result_phases.append({
+            "number": phase["number"],
+            "label": phase["label"],
+            "task_ids": task_ids,
+        })
+
+    return {
+        "current_phase": project.current_phase or 1,
+        "phases": result_phases,
+    }
