@@ -256,6 +256,9 @@ export const docsApi = {
     const r = await api.get<DocContent>(`/docs/${repo}/file`, { params: { path } });
     return r.data;
   },
+  writeFile: async (repo: string, path: string, content: string): Promise<void> => {
+    await api.put(`/docs/${repo}/file`, { content }, { params: { path } });
+  },
   checkSync: async (repo: string): Promise<GitSyncStatus> => {
     const r = await api.get<GitSyncStatus>(`/docs/${repo}/sync`);
     return r.data;

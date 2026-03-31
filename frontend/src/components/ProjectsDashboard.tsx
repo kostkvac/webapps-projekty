@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ReactElement } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Box, Typography, Card, CardContent, Chip, Button, IconButton,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField,
@@ -83,41 +85,84 @@ export default function ProjectsDashboard() {
   const [showAudit, setShowAudit] = useState(false);
   const [docDetailTask, setDocDetailTask] = useState<Task | null>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
+  const [docPath, setDocPath] = useState<string | null>(null);
   const [docLoading, setDocLoading] = useState(false);
   const [docFiles, setDocFiles] = useState<Record<string, DocFile[]>>({});
 
   const findDocFile = async (task: Task, parentTitle: string): Promise<string | null> => {
     if (!selectedProject?.docs_repo) return null;
     const repo = selectedProject.docs_repo;
-    const cacheKey = repo + '/' + parentTitle;
+
+    // First, find the correct folder by fuzzy-matching parentTitle to actual folder names
+    const rootCacheKey = repo + '/__root__';
+    let rootFiles = docFiles[rootCacheKey];
+    if (!rootFiles) {
+      try {
+        rootFiles = await docsApi.listFiles(repo);
+        setDocFiles(prev => ({ ...prev, [rootCacheKey]: rootFiles! }));
+      } catch { return null; }
+    }
+
+    // Match parent title to folder: case-insensitive, partial match
+    const ptLower = parentTitle.toLowerCase();
+    const folder = rootFiles.find(f => f.is_dir && f.name.toLowerCase() === ptLower)
+      || rootFiles.find(f => f.is_dir && f.name.toLowerCase().includes(ptLower))
+      || rootFiles.find(f => f.is_dir && ptLower.includes(f.name.toLowerCase()))
+      || rootFiles.find(f => f.is_dir && ptLower.split(' ').filter(w => w.length > 2).every(w => f.name.toLowerCase().includes(w)));
+    if (!folder) return null;
+    const folderPath = folder.path;
+
+    // Now list files in the matched folder  
+    const cacheKey = repo + '/' + folderPath;
     let files = docFiles[cacheKey];
     if (!files) {
       try {
-        files = await docsApi.listFiles(repo, parentTitle);
+        files = await docsApi.listFiles(repo, folderPath);
         setDocFiles(prev => ({ ...prev, [cacheKey]: files! }));
       } catch { return null; }
     }
+
+    // Match sub-task title to a .md file
     const titleLower = task.title.toLowerCase();
     const match = files.find(f => !f.is_dir && titleLower.includes(f.name.replace(/\.md$/, '').toLowerCase()));
-    if (match) return parentTitle + '/' + match.path;
+    if (match) return folderPath + '/' + match.name;
     const fuzzy = files.find(f => !f.is_dir && f.name.replace(/\.md$/, '').toLowerCase().split(' ').some(w => w.length > 3 && titleLower.includes(w)));
-    return fuzzy ? parentTitle + '/' + fuzzy.path : null;
+    return fuzzy ? folderPath + '/' + fuzzy.name : null;
   };
 
   const openDocDetail = async (task: Task, parentTitle: string) => {
     setDocDetailTask(task);
     setDocContent(null);
+    setDocPath(null);
     setDocLoading(true);
     try {
       const path = await findDocFile(task, parentTitle);
       if (path && selectedProject?.docs_repo) {
         const doc = await docsApi.readFile(selectedProject.docs_repo, path);
         setDocContent(doc.content);
+        setDocPath(path);
       } else {
         setDocContent(null);
       }
     } catch { setDocContent(null); }
     setDocLoading(false);
+  };
+
+  const toggleDocCheckbox = async (lineIndex: number) => {
+    if (!docContent || !docPath || !selectedProject?.docs_repo) return;
+    const lines = docContent.split('\n');
+    const line = lines[lineIndex];
+    if (!line) return;
+    if (line.includes('- [ ] ')) {
+      lines[lineIndex] = line.replace('- [ ] ', '- [x] ');
+    } else if (line.includes('- [x] ')) {
+      lines[lineIndex] = line.replace('- [x] ', '- [ ] ');
+    } else return;
+    const newContent = lines.join('\n');
+    setDocContent(newContent);
+    try {
+      await docsApi.writeFile(selectedProject.docs_repo, docPath, newContent);
+    } catch { showSnack('Nepoda\u0159ilo se ulo\u017eit zm\u011bnu', 'error'); }
   };
 
   const showSnack = (message: string, severity: 'success' | 'error' = 'success') =>
@@ -679,7 +724,7 @@ export default function ProjectsDashboard() {
   const renderDocDetail = () => {
     if (!docDetailTask) return null;
     return (
-      <Dialog open={!!docDetailTask} onClose={() => { setDocDetailTask(null); setDocContent(null); }} maxWidth="md" fullWidth>
+      <Dialog open={!!docDetailTask} onClose={() => { setDocDetailTask(null); setDocContent(null); setDocPath(null); }} maxWidth="md" fullWidth>
         <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <MenuBook fontSize="small" />
@@ -694,9 +739,48 @@ export default function ProjectsDashboard() {
           {docLoading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}><CircularProgress /></Box>
           ) : docContent ? (
-            <Box sx={{ fontFamily: 'system-ui, sans-serif', fontSize: '0.9rem', lineHeight: 1.7, '& h1': { fontSize: '1.4rem', fontWeight: 700, mt: 2, mb: 1, color: COLORS.darkForest }, '& h2': { fontSize: '1.15rem', fontWeight: 700, mt: 2, mb: 0.5, color: '#333' }, '& h3': { fontSize: '1rem', fontWeight: 600, mt: 1.5, mb: 0.5 }, '& ul, & ol': { pl: 3 }, '& li': { mb: 0.5 }, '& code': { bgcolor: '#f5f5f5', px: 0.5, borderRadius: 0.5, fontFamily: 'monospace', fontSize: '0.85em' }, '& pre': { bgcolor: '#f5f5f5', p: 2, borderRadius: 1, overflow: 'auto', '& code': { bgcolor: 'transparent', p: 0 } }, '& table': { borderCollapse: 'collapse', width: '100%', mb: 2, '& th, & td': { border: '1px solid #ddd', p: 1, textAlign: 'left' }, '& th': { bgcolor: '#f5f5f5', fontWeight: 600 } }, '& hr': { my: 2, border: 'none', borderTop: '1px solid #e0e0e0' }, '& blockquote': { borderLeft: '3px solid ' + COLORS.emerald, pl: 2, ml: 0, color: '#555', fontStyle: 'italic' } }}
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(docContent) }}
-            />
+            <Box sx={{ fontFamily: 'system-ui, sans-serif', fontSize: '0.9rem', lineHeight: 1.7,
+              '& h1': { fontSize: '1.4rem', fontWeight: 700, mt: 2, mb: 1, color: COLORS.darkForest },
+              '& h2': { fontSize: '1.15rem', fontWeight: 700, mt: 2, mb: 0.5, color: '#333' },
+              '& h3': { fontSize: '1rem', fontWeight: 600, mt: 1.5, mb: 0.5 },
+              '& ul, & ol': { pl: 3 }, '& li': { mb: 0.5 },
+              '& code': { bgcolor: '#f5f5f5', px: 0.5, borderRadius: 0.5, fontFamily: 'monospace', fontSize: '0.85em' },
+              '& pre': { bgcolor: '#f5f5f5', p: 2, borderRadius: 1, overflow: 'auto', '& code': { bgcolor: 'transparent', p: 0 } },
+              '& table': { borderCollapse: 'collapse', width: '100%', mb: 2, '& th, & td': { border: '1px solid #ddd', p: 1, textAlign: 'left' }, '& th': { bgcolor: '#f5f5f5', fontWeight: 600 } },
+              '& hr': { my: 2, border: 'none', borderTop: '1px solid #e0e0e0' },
+              '& blockquote': { borderLeft: '3px solid ' + COLORS.emerald, pl: 2, ml: 0, color: '#555', fontStyle: 'italic' },
+              '& .task-checkbox': { cursor: 'pointer', mr: 1, transform: 'scale(1.2)', accentColor: COLORS.emerald },
+            }}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  li: ({ children, node }) => {
+                    const inputChild = node?.children?.find((c: any) => c.tagName === 'input' && c.properties?.type === 'checkbox');
+                    if (inputChild) {
+                      const checked = (inputChild as any).properties?.checked || false;
+                      const pos = node?.position?.start?.line;
+                      const lineIdx = pos ? pos - 1 : -1;
+                      return (
+                        <li style={{ listStyle: 'none', marginLeft: -20 }}>
+                          <input
+                            type="checkbox"
+                            className="task-checkbox"
+                            checked={checked}
+                            onChange={() => { if (lineIdx >= 0) toggleDocCheckbox(lineIdx); }}
+                          />
+                          {children}
+                        </li>
+                      );
+                    }
+                    return <li>{children}</li>;
+                  },
+                  input: ({ type, checked }) => {
+                    if (type === 'checkbox') return null;
+                    return <input type={type} checked={checked} readOnly />;
+                  },
+                }}
+              >{docContent}</ReactMarkdown>
+            </Box>
           ) : (
             <Paper sx={{ p: 3, textAlign: 'center', bgcolor: '#fafafa', borderRadius: 2 }}>
               <Typography color="text.secondary">
@@ -709,65 +793,10 @@ export default function ProjectsDashboard() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => { setDocDetailTask(null); setDocContent(null); }}>Zavřít</Button>
+          <Button onClick={() => { setDocDetailTask(null); setDocContent(null); setDocPath(null); }}>Zavřít</Button>
         </DialogActions>
       </Dialog>
     );
-  };
-
-  // Simple markdown→HTML renderer
-  const renderMarkdown = (md: string): string => {
-    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const lines = md.split('\n');
-    let html = '';
-    let inList = false;
-    let inCode = false;
-    let inTable = false;
-    for (const line of lines) {
-      if (line.startsWith('```')) {
-        if (inCode) { html += '</code></pre>'; inCode = false; }
-        else { html += '<pre><code>'; inCode = true; }
-        continue;
-      }
-      if (inCode) { html += esc(line) + '\n'; continue; }
-      if (line.startsWith('|') && line.endsWith('|')) {
-        const cells = line.split('|').slice(1, -1).map(c => c.trim());
-        if (cells.every(c => /^[-:]+$/.test(c))) continue;
-        if (!inTable) { html += '<table>'; inTable = true; }
-        const isHeader = !inTable || html.endsWith('<table>');
-        const tag = isHeader ? 'th' : 'td';
-        html += '<tr>' + cells.map(c => `<${tag}>${esc(c)}</${tag}>`).join('') + '</tr>';
-        continue;
-      }
-      if (inTable && !line.startsWith('|')) { html += '</table>'; inTable = false; }
-      if (/^#{1,3} /.test(line)) {
-        if (inList) { html += '</ul>'; inList = false; }
-        const lvl = line.match(/^#+/)![0].length;
-        html += `<h${lvl}>${esc(line.replace(/^#+\s*/, ''))}</h${lvl}>`;
-      } else if (/^[-*] /.test(line)) {
-        if (!inList) { html += '<ul>'; inList = true; }
-        const content = line.replace(/^[-*] /, '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        const checked = content.startsWith('[x] ') ? '☑ ' : content.startsWith('[ ] ') ? '☐ ' : '';
-        const text = checked ? content.slice(4) : content;
-        html += `<li>${checked}${esc(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')}</li>`;
-      } else if (line.startsWith('> ')) {
-        if (inList) { html += '</ul>'; inList = false; }
-        html += `<blockquote>${esc(line.slice(2))}</blockquote>`;
-      } else if (line.startsWith('---')) {
-        if (inList) { html += '</ul>'; inList = false; }
-        html += '<hr>';
-      } else if (line.trim() === '') {
-        if (inList) { html += '</ul>'; inList = false; }
-        html += '<br>';
-      } else {
-        if (inList) { html += '</ul>'; inList = false; }
-        html += `<p>${esc(line).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>')}</p>`;
-      }
-    }
-    if (inList) html += '</ul>';
-    if (inCode) html += '</code></pre>';
-    if (inTable) html += '</table>';
-    return html;
   };
 
   // ======== PROJECT PAGE ========

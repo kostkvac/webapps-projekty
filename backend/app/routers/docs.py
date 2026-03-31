@@ -96,6 +96,22 @@ async def read_file(repo: str, path: str):
     return DocContent(path=path, content=content, filename=filepath.name)
 
 
+class DocWriteRequest(BaseModel):
+    content: str
+
+
+@router.put("/docs/{repo}/file")
+async def write_file(repo: str, path: str, body: DocWriteRequest):
+    """Write content to a markdown file."""
+    filepath = _safe_path(repo, path)
+    if filepath.suffix.lower() != ".md":
+        raise HTTPException(status_code=400, detail="Only .md files are supported")
+    if not filepath.parent.is_dir():
+        raise HTTPException(status_code=404, detail="Directory not found")
+    filepath.write_text(body.content, encoding="utf-8")
+    return {"status": "ok", "path": path}
+
+
 @router.get("/docs/{repo}/sync", response_model=GitSyncStatus)
 async def check_sync(repo: str):
     """Check if local repo is in sync with remote."""
