@@ -562,3 +562,24 @@ async def get_phases(repo: str, project_id: int, db: Session = Depends(get_db)):
         "current_phase": project.current_phase or 1,
         "phases": result_phases,
     }
+
+
+@router.get("/docs/check-changes")
+async def check_doc_changes():
+    """Return fingerprint per repo for NFS change detection."""
+    if not DOCS_ROOT.is_dir():
+        return {}
+    result = {}
+    for d in DOCS_ROOT.iterdir():
+        if d.is_dir() and not d.name.startswith('.') and d.name not in IGNORED_DIRS:
+            try:
+                md_files = list(d.rglob("*.md"))
+                if md_files:
+                    total_mtime = sum(f.stat().st_mtime for f in md_files)
+                    result[d.name] = {
+                        "file_count": len(md_files),
+                        "fingerprint": str(int(total_mtime * 1000)),
+                    }
+            except Exception:
+                pass
+    return result

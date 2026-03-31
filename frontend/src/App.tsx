@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
-import { ThemeProvider, createTheme, CssBaseline, Box, Tabs, Tab, Chip, Tooltip } from '@mui/material';
-import { Assignment, MenuBook, CloudDone, SyncProblem } from '@mui/icons-material';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { ThemeProvider, createTheme, CssBaseline, Box, Tabs, Tab, Chip, Tooltip, Badge, Snackbar, Alert } from '@mui/material';
+import { Assignment, MenuBook, CloudDone, SyncProblem, FiberNew } from '@mui/icons-material';
 import ProjectsDashboard from './components/ProjectsDashboard';
 import DocsBrowser from './components/DocsBrowser';
 import { docsApi } from './api/projects';
@@ -25,6 +25,9 @@ export default function App() {
   const [syncStatuses, setSyncStatuses] = useState<Record<string, boolean>>({});
   const [repoProjectMap, setRepoProjectMap] = useState<Record<string, number>>({});
   const [dashboardKey, setDashboardKey] = useState(0);
+  const [docsChanges, setDocsChanges] = useState(0);
+  const [changeSnack, setChangeSnack] = useState<string | null>(null);
+  const fingerprintsRef = useRef<Record<string, string>>({});
 
   const loadRepos = useCallback(async () => {
     try {
@@ -52,20 +55,54 @@ export default function App() {
 
   useEffect(() => { loadRepos(); }, [loadRepos]);
 
+  // Poll for NFS doc changes every 30s
+  useEffect(() => {
+    let cancelled = false;
+    const checkChanges = async () => {
+      try {
+        const data = await docsApi.checkChanges();
+        const prev = fingerprintsRef.current;
+        let changedCount = 0;
+        const changedRepos: string[] = [];
+        for (const [repo, info] of Object.entries(data)) {
+          if (prev[repo] && prev[repo] !== info.fingerprint) {
+            changedCount++;
+            changedRepos.push(repo);
+          }
+        }
+        // Store current fingerprints
+        const newFp: Record<string, string> = {};
+        for (const [repo, info] of Object.entries(data)) newFp[repo] = info.fingerprint;
+        fingerprintsRef.current = newFp;
+        // Only notify if we had previous data (skip first load)
+        if (Object.keys(prev).length > 0 && changedCount > 0 && !cancelled) {
+          setDocsChanges(c => c + changedCount);
+          setChangeSnack(`Změna v dokumentaci: ${changedRepos.join(', ')}`);
+        }
+      } catch { /* silent */ }
+    };
+    checkChanges();
+    const interval = setInterval(checkChanges, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
   const allSynced = docsRepos.length === 0 || docsRepos.every(r => syncStatuses[r] !== false);
 
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 3, bgcolor: '#fff' }}>
-        <Tabs value={tab} onChange={(_, v) => { setTab(v); setSelectedRepo(null); }}>
+        <Tabs value={tab} onChange={(_, v) => { setTab(v); setSelectedRepo(null); if (v === 1) setDocsChanges(0); }}>
           <Tab icon={<Assignment fontSize="small" />} iconPosition="start" label="Projekty" />
           <Tab
             icon={<MenuBook fontSize="small" />}
             iconPosition="start"
             label={
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                Docs
+                <Badge badgeContent={docsChanges} color="error" max={9}
+                  sx={{ '& .MuiBadge-badge': { fontSize: '0.65rem', minWidth: 16, height: 16 } }}>
+                  <span>Docs</span>
+                </Badge>
                 {docsRepos.length > 0 && (
                   <Tooltip title={allSynced ? 'All repos synced' : 'Some repos out of sync'}>
                     {allSynced
@@ -129,6 +166,9 @@ export default function App() {
           )}
         </Box>
       )}
+      <Snackbar open={!!changeSnack} autoHideDuration={5000} onClose={() => setChangeSnack(null)} anchorOrigin={{ vertical: 'top', horizontal: 'right' }}>
+        <Alert severity="info" variant="filled" icon={<FiberNew />} onClose={() => setChangeSnack(null)}>{changeSnack}</Alert>
+      </Snackbar>
     </ThemeProvider>
   );
 }

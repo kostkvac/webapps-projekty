@@ -2,6 +2,7 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel as PydBaseModel
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session, joinedload
 
@@ -345,6 +346,24 @@ async def delete_task(task_id: int, db: Session = Depends(get_db)):
     _log_activity(db, task.project_id, "task_deleted", "task", task.id)
     db.delete(task)
     db.commit()
+
+
+# ==================== REORDER ====================
+
+class _ReorderItem(PydBaseModel):
+    id: int
+    sort_order: int
+
+class _ReorderRequest(PydBaseModel):
+    items: list[_ReorderItem]
+
+@router.post("/tasks/reorder")
+async def reorder_tasks(body: _ReorderRequest, db: Session = Depends(get_db)):
+    """Bulk-update sort_order for multiple tasks."""
+    for item in body.items:
+        db.query(Task).filter(Task.id == item.id).update({Task.sort_order: item.sort_order})
+    db.commit()
+    return {"status": "ok"}
 
 
 # ==================== COMMENTS ====================

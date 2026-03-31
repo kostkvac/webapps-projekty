@@ -219,6 +219,11 @@ export const projectsApi = {
     const r = await api.get(`${BASE}/${projectId}/activity`);
     return r.data;
   },
+
+  // Reorder
+  reorderTasks: async (items: { id: number; sort_order: number }[]) => {
+    await api.post('/tasks/reorder', { items });
+  },
 };
 
 // ---- Docs API ----
@@ -310,6 +315,10 @@ export const docsApi = {
   },
   getPhases: async (repo: string, projectId: number): Promise<PhasesData> => {
     const r = await api.get<PhasesData>(`/docs/${repo}/phases`, { params: { project_id: projectId } });
+    return r.data;
+  },
+  checkChanges: async (): Promise<Record<string, { file_count: number; fingerprint: string }>> => {
+    const r = await api.get<Record<string, { file_count: number; fingerprint: string }>>('/docs/check-changes');
     return r.data;
   },
 };

@@ -18,6 +18,7 @@ import {
   ExpandMore, ChevronRight, SubdirectoryArrowRight,
   BugReport, Lightbulb, NoteAlt, CheckCircle,
   Rocket, History, StickyNote2, Comment, ArrowForward, MenuBook,
+  VisibilityOff, Visibility, WarningAmber,
 } from '@mui/icons-material';
 import projectsApi from '../api/projects';
 import { docsApi } from '../api/projects';
@@ -69,7 +70,10 @@ export default function ProjectsDashboard() {
   const [expandedUkoly, setExpandedUkoly] = useState<Set<number>>(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState<number | null>(null);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
+  const [dragInsertInfo, setDragInsertInfo] = useState<{ taskId: number; pos: 'before' | 'after' } | null>(null);
   const [taskPrevStatus, setTaskPrevStatus] = useState<Record<number, string>>({});
+  const [hideDone, setHideDone] = useState(false);
+  const [inlineTaskText, setInlineTaskText] = useState<Record<string, string>>({});
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Partial<Project> & { label_ids?: number[] } | null>(null);
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
@@ -300,6 +304,82 @@ export default function ProjectsDashboard() {
     } finally { setDeleteConfirmOpen(false); setDeleteTarget(null); }
   };
 
+  const getDeleteInfo = () => {
+    if (!deleteTarget) return null;
+    if (deleteTarget.type === 'project') {
+      const p = projects.find(x => x.id === deleteTarget.id) || selectedProject;
+      const taskCount = p?.task_count || (selectedProject?.id === deleteTarget.id ? (selectedProject.tasks || []).length : 0);
+      return { label: p?.name || 'projekt', details: taskCount > 0 ? `Včetně ${taskCount} úkolů se všemi pod-úkoly, komentáři a poznámkami.` : null };
+    } else {
+      const allTasks = selectedProject?.tasks || [];
+      const task = allTasks.find(t => t.id === deleteTarget.id) || allTasks.flatMap(t => t.subtasks || []).find(t => t.id === deleteTarget.id);
+      if (!task) return { label: 'úkol', details: null };
+      const parts: string[] = [];
+      if ((task.subtasks?.length || 0) > 0) parts.push(`${task.subtasks!.length} pod-úkolů`);
+      if ((task.comments?.length || 0) > 0) parts.push(`${task.comments!.length} komentářů`);
+      if ((task.notes?.length || 0) > 0) parts.push(`${task.notes!.length} poznámek`);
+      return { label: task.title, details: parts.length > 0 ? `Smaže se i: ${parts.join(', ')}.` : null };
+    }
+  };
+
+  const resetDragState = () => {
+    setDraggedTaskId(null);
+    setDragInsertInfo(null);
+    setDragOverCol(null);
+  };
+
+  const handleCardDragOver = (e: React.DragEvent, taskId: number, isHorizontal = false) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pos = isHorizontal
+      ? (e.clientX < rect.left + rect.width / 2 ? 'before' : 'after')
+      : (e.clientY < rect.top + rect.height / 2 ? 'before' : 'after');
+    setDragInsertInfo({ taskId, pos });
+  };
+
+  const handleCardDrop = async (e: React.DragEvent, targetTaskId: number, targetStatus: string, columnTasks: Task[]) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!draggedTaskId || draggedTaskId === targetTaskId || !selectedProject) { resetDragState(); return; }
+    const allT = (selectedProject.tasks || []).flatMap(t => [t, ...(t.subtasks || [])]);
+    const draggedTask = allT.find(t => t.id === draggedTaskId);
+    if (!draggedTask) { resetDragState(); return; }
+    if (draggedTask.status === targetStatus) {
+      const colTasks = [...columnTasks.filter(t => t.status === targetStatus)].sort((a, b) => a.sort_order - b.sort_order);
+      const filtered = colTasks.filter(t => t.id !== draggedTaskId);
+      const targetIdx = filtered.findIndex(t => t.id === targetTaskId);
+      const insertIdx = dragInsertInfo?.pos === 'after' ? targetIdx + 1 : targetIdx;
+      filtered.splice(Math.max(0, insertIdx), 0, draggedTask);
+      try {
+        await projectsApi.reorderTasks(filtered.map((t, i) => ({ id: t.id, sort_order: i * 10 })));
+        loadProjectDetail(selectedProject.id);
+      } catch { showSnack('Chyba při řazení', 'error'); }
+    } else {
+      if (ACTIVE_STATUSES.includes(targetStatus) && !isTaskInActivePhase(draggedTaskId)) {
+        showSnack('Tento úkol není v aktuální fázi — nelze přesunout', 'error');
+      } else {
+        quickStatus(draggedTaskId, targetStatus);
+      }
+    }
+    resetDragState();
+  };
+
+  const handleInlineAdd = async (status: string, parentId?: number) => {
+    const key = parentId ? `sub_${parentId}_${status}` : status;
+    const title = inlineTaskText[key]?.trim();
+    if (!title || !selectedProject) return;
+    try {
+      await projectsApi.createTask(selectedProject.id, {
+        title, status, priority: 'medium', task_type: 'task',
+        parent_task_id: parentId || undefined,
+      } as Partial<Task>);
+      setInlineTaskText(p => ({ ...p, [key]: '' }));
+      loadProjectDetail(selectedProject.id);
+      showSnack(parentId ? 'Pod-úkol přidán' : 'Úkol přidán');
+    } catch { showSnack('Chyba', 'error'); }
+  };
+
   const quickStatus = async (taskId: number, newStatus: string) => {
     // Phase restriction: block active statuses for tasks not in current phase
     if (ACTIVE_STATUSES.includes(newStatus) && !isTaskInActivePhase(taskId)) {
@@ -490,16 +570,23 @@ export default function ProjectsDashboard() {
   const renderSubKanban = (subs: Task[], parentId: number, parentTitle: string) => (
     <Box sx={{ display: 'flex', gap: 1.5, overflowX: 'auto', pb: 1, pt: 1 }}>
       {TASK_STATUSES.map(status => {
+        if (hideDone && status === 'done') return null;
         const cfg = TASK_CFG[status];
         const colKey = `sub_${parentId}_${status}`;
         const colTasks = subs.filter(t => t.status === status);
         if (colTasks.length === 0 && !['backlog', 'todo', 'in_progress', 'done'].includes(status)) return null;
         const isActiveCol = ACTIVE_STATUSES.includes(status);
+        const isOver = dragOverCol === colKey;
         return (
-          <Paper key={status} sx={{ minWidth: 170, flex: '0 0 170px', borderRadius: 1.5, bgcolor: dragOverCol === colKey ? '#e8f5e9' : '#fff', border: '1px solid #e8e8e8' }}
-            onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); }}
+          <Paper key={status} sx={{ minWidth: 170, flex: '0 0 170px', borderRadius: 1.5,
+            bgcolor: isOver ? cfg.color + '08' : '#fff',
+            border: isOver ? `2px dashed ${cfg.color}` : '1px solid #e8e8e8',
+            transition: 'all 0.2s ease',
+            boxShadow: isOver ? `0 0 8px ${cfg.color}22` : 'none',
+          }}
+            onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); setDragInsertInfo(null); }}
             onDragLeave={() => setDragOverCol(null)}
-            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); setDraggedTaskId(null); }}>
+            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); resetDragState(); }}>
             <Box sx={{ p: 1, borderBottom: '2px solid ' + cfg.color }}>
               <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({colTasks.length})</Typography>
             </Box>
@@ -509,13 +596,24 @@ export default function ProjectsDashboard() {
                 const active = isTaskInActivePhase(sub.id);
                 const phColor = phase ? PHASE_COLORS[(phase.number - 1) % PHASE_COLORS.length] : undefined;
                 const blocked = !active && isActiveCol;
+                const isDragged = draggedTaskId === sub.id;
+                const insertBefore = dragInsertInfo?.taskId === sub.id && dragInsertInfo.pos === 'before';
+                const insertAfter = dragInsertInfo?.taskId === sub.id && dragInsertInfo.pos === 'after';
                 return (
                 <Card key={sub.id} draggable={!blocked}
                   onDragStart={e => { if (blocked) { e.preventDefault(); return; } setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
-                  onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                  onDragEnd={resetDragState}
+                  onDragOver={e => handleCardDragOver(e, sub.id)}
+                  onDrop={e => handleCardDrop(e, sub.id, status, subs)}
                   onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
-                  sx={{ mb: 0.75, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
-                    opacity: draggedTaskId === sub.id ? 0.4 : !active ? 0.45 : 1, filter: !active ? 'grayscale(0.5)' : 'none', '&:hover': { boxShadow: active ? 2 : 0 } }}>
+                  sx={{ mb: 0.75, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1,
+                    borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
+                    borderTop: insertBefore ? '3px solid #007638' : undefined,
+                    borderBottom: insertAfter ? '3px solid #007638' : undefined,
+                    opacity: isDragged ? 0.3 : !active ? 0.45 : 1,
+                    transform: isDragged ? 'scale(0.95) rotate(1deg)' : 'none',
+                    transition: 'opacity 0.2s, transform 0.2s, border 0.15s',
+                    filter: !active ? 'grayscale(0.5)' : 'none', '&:hover': { boxShadow: active ? 2 : 0 } }}>
                   <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
                       {phase && <Chip label={`F${phase.number}`} size="small" sx={{ height: 16, fontSize: '0.6rem', fontWeight: 700, bgcolor: phColor + '22', color: phColor, '& .MuiChip-label': { px: 0.5 } }} />}
@@ -532,6 +630,13 @@ export default function ProjectsDashboard() {
                 </Card>
                 );
               })}
+              <TextField size="small" fullWidth placeholder="+ Nový..."
+                value={inlineTaskText[colKey] || ''}
+                onChange={e => setInlineTaskText(p => ({ ...p, [colKey]: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter') handleInlineAdd(status, parentId); }}
+                onClick={e => e.stopPropagation()}
+                sx={{ mt: 0.5, '& .MuiInputBase-input': { fontSize: '0.75rem', py: 0.5, px: 1 }, '& .MuiOutlinedInput-root': { bgcolor: '#fafafa' } }}
+              />
             </Box>
           </Paper>
         );
@@ -543,32 +648,49 @@ export default function ProjectsDashboard() {
   const renderSubSwimlane = (subs: Task[], parentId: number, parentTitle: string) => (
     <Box>
       {TASK_STATUSES.map(status => {
+        if (hideDone && status === 'done') return null;
         const cfg = TASK_CFG[status];
         const colKey = `sub_${parentId}_${status}`;
         const rowTasks = subs.filter(t => t.status === status);
         if (rowTasks.length === 0 && !['backlog', 'todo', 'in_progress', 'done'].includes(status)) return null;
         const isActiveCol = ACTIVE_STATUSES.includes(status);
+        const isOver = dragOverCol === colKey;
         return (
-          <Box key={status} sx={{ display: 'flex', mb: 1, borderRadius: 1.5, overflow: 'hidden' }}
-            onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); }}
+          <Box key={status} sx={{ display: 'flex', mb: 1, borderRadius: 1.5, overflow: 'hidden',
+            outline: isOver ? `2px dashed ${cfg.color}` : 'none',
+            transition: 'outline 0.2s ease',
+          }}
+            onDragOver={e => { e.preventDefault(); setDragOverCol(colKey); setDragInsertInfo(null); }}
             onDragLeave={() => setDragOverCol(null)}
-            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); setDraggedTaskId(null); }}>
+            onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); resetDragState(); }}>
             <Box sx={{ minWidth: 100, p: 1, bgcolor: cfg.bg, display: 'flex', alignItems: 'center', borderLeft: '2px solid ' + cfg.color }}>
               <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color, fontSize: '0.68rem' }}>{cfg.label} ({rowTasks.length})</Typography>
             </Box>
-            <Box sx={{ display: 'flex', gap: 0.75, p: 0.75, flex: 1, overflowX: 'auto', minHeight: 44, bgcolor: dragOverCol === colKey ? '#e8f5e960' : 'transparent' }}>
+            <Box sx={{ display: 'flex', gap: 0.75, p: 0.75, flex: 1, overflowX: 'auto', minHeight: 44,
+              bgcolor: isOver ? cfg.color + '08' : 'transparent', transition: 'background-color 0.2s',
+            }}>
               {rowTasks.map(sub => {
                 const phase = getTaskPhase(sub.id);
                 const active = isTaskInActivePhase(sub.id);
                 const phColor = phase ? PHASE_COLORS[(phase.number - 1) % PHASE_COLORS.length] : undefined;
                 const blocked = !active && isActiveCol;
+                const isDragged = draggedTaskId === sub.id;
+                const insertBefore = dragInsertInfo?.taskId === sub.id && dragInsertInfo.pos === 'before';
+                const insertAfter = dragInsertInfo?.taskId === sub.id && dragInsertInfo.pos === 'after';
                 return (
                 <Card key={sub.id} draggable={!blocked}
                   onDragStart={e => { if (blocked) { e.preventDefault(); return; } setDraggedTaskId(sub.id); e.dataTransfer.effectAllowed = 'move'; }}
-                  onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                  onDragEnd={resetDragState}
+                  onDragOver={e => handleCardDragOver(e, sub.id, true)}
+                  onDrop={e => handleCardDrop(e, sub.id, status, subs)}
                   onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
-                  sx={{ minWidth: 150, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1, flexShrink: 0, borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
-                    opacity: draggedTaskId === sub.id ? 0.4 : !active ? 0.45 : 1, filter: !active ? 'grayscale(0.5)' : 'none', '&:hover': { boxShadow: active ? 2 : 0 } }}>
+                  sx={{ minWidth: 150, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1, flexShrink: 0,
+                    borderLeft: insertBefore ? '3px solid #007638' : '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
+                    borderRight: insertAfter ? '3px solid #007638' : undefined,
+                    opacity: isDragged ? 0.3 : !active ? 0.45 : 1,
+                    transform: isDragged ? 'scale(0.95) rotate(1deg)' : 'none',
+                    transition: 'opacity 0.2s, transform 0.2s, border 0.15s',
+                    filter: !active ? 'grayscale(0.5)' : 'none', '&:hover': { boxShadow: active ? 2 : 0 } }}>
                   <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
                       {phase && <Chip label={`F${phase.number}`} size="small" sx={{ height: 16, fontSize: '0.6rem', fontWeight: 700, bgcolor: phColor + '22', color: phColor, '& .MuiChip-label': { px: 0.5 } }} />}
@@ -695,13 +817,20 @@ export default function ProjectsDashboard() {
     <>
       <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', pb: 2 }}>
         {TASK_STATUSES.map(status => {
+          if (hideDone && status === 'done') return null;
           const cfg = TASK_CFG[status];
           const colTasks = tasks.filter(t => t.status === status);
+          const isOver = dragOverCol === status;
           return (
-            <Paper key={status} sx={{ minWidth: 240, flex: '0 0 240px', borderRadius: 2, bgcolor: dragOverCol === status ? '#e8f5e9' : '#f5f5f5' }}
-              onDragOver={e => { e.preventDefault(); setDragOverCol(status); }}
+            <Paper key={status} sx={{ minWidth: 240, flex: '0 0 240px', borderRadius: 2,
+              bgcolor: isOver ? cfg.color + '08' : '#f5f5f5',
+              border: isOver ? `2px dashed ${cfg.color}` : '2px solid transparent',
+              transition: 'all 0.2s ease',
+              boxShadow: isOver ? `0 0 12px ${cfg.color}22` : 'none',
+            }}
+              onDragOver={e => { e.preventDefault(); setDragOverCol(status); setDragInsertInfo(null); }}
               onDragLeave={() => setDragOverCol(null)}
-              onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); }}>
+              onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); resetDragState(); }}>
               <Box sx={{ p: 1.5, borderBottom: '3px solid ' + cfg.color }}>
                 <Typography variant="subtitle2" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({colTasks.length})</Typography>
               </Box>
@@ -710,12 +839,24 @@ export default function ProjectsDashboard() {
                   const subs = t.subtasks || [];
                   const isExp = expandedUkoly.has(t.id);
                   const phB = getPhaseBreakdown(subs);
+                  const isDragged = draggedTaskId === t.id;
+                  const insertBefore = dragInsertInfo?.taskId === t.id && dragInsertInfo.pos === 'before';
+                  const insertAfter = dragInsertInfo?.taskId === t.id && dragInsertInfo.pos === 'after';
                   return (
                     <Card key={t.id} draggable
                       onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
-                      onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                      onDragEnd={resetDragState}
+                      onDragOver={e => handleCardDragOver(e, t.id)}
+                      onDrop={e => handleCardDrop(e, t.id, status, tasks)}
                       onClick={() => toggleUkol(t.id)}
-                      sx={{ mb: 1, cursor: 'pointer', borderRadius: 1.5, borderLeft: '3px solid ' + (PRI_CFG[t.priority] || PRI_CFG.medium).color, opacity: draggedTaskId === t.id ? 0.4 : 1, outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 3 } }}>
+                      sx={{ mb: 1, cursor: 'pointer', borderRadius: 1.5,
+                        borderLeft: '3px solid ' + (PRI_CFG[t.priority] || PRI_CFG.medium).color,
+                        borderTop: insertBefore ? '3px solid #007638' : undefined,
+                        borderBottom: insertAfter ? '3px solid #007638' : undefined,
+                        opacity: isDragged ? 0.3 : 1,
+                        transform: isDragged ? 'scale(0.95) rotate(1deg)' : 'none',
+                        transition: 'opacity 0.2s, transform 0.2s, border 0.15s',
+                        outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 3 } }}>
                       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                           <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
@@ -732,10 +873,17 @@ export default function ProjectsDashboard() {
                     </Card>
                   );
                 })}
+                <TextField size="small" fullWidth placeholder="+ Nový úkol..."
+                  value={inlineTaskText[status] || ''}
+                  onChange={e => setInlineTaskText(p => ({ ...p, [status]: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') handleInlineAdd(status); }}
+                  onClick={e => e.stopPropagation()}
+                  sx={{ mt: 0.5, '& .MuiInputBase-input': { fontSize: '0.8rem', py: 0.6, px: 1 }, '& .MuiOutlinedInput-root': { bgcolor: '#fff' } }}
+                />
               </Box>
             </Paper>
           );
-        })}
+        }).filter(Boolean)}
       </Box>
       {tasks.filter(t => expandedUkoly.has(t.id)).map(t => {
         const subs = t.subtasks || [];
@@ -765,27 +913,45 @@ export default function ProjectsDashboard() {
     <>
       <Box>
         {TASK_STATUSES.map(status => {
+          if (hideDone && status === 'done') return null;
           const cfg = TASK_CFG[status];
           const rowTasks = tasks.filter(t => t.status === status);
+          const isOver = dragOverCol === status;
           return (
-            <Box key={status} sx={{ display: 'flex', mb: 1.5, borderRadius: 2, overflow: 'hidden' }}
-              onDragOver={e => { e.preventDefault(); setDragOverCol(status); }}
+            <Box key={status} sx={{ display: 'flex', mb: 1.5, borderRadius: 2, overflow: 'hidden',
+              outline: isOver ? `2px dashed ${cfg.color}` : 'none',
+              transition: 'outline 0.2s ease',
+            }}
+              onDragOver={e => { e.preventDefault(); setDragOverCol(status); setDragInsertInfo(null); }}
               onDragLeave={() => setDragOverCol(null)}
-              onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); setDragOverCol(null); }}>
+              onDrop={e => { e.preventDefault(); if (draggedTaskId) quickStatus(draggedTaskId, status); resetDragState(); }}>
               <Box sx={{ minWidth: 130, p: 1.5, bgcolor: cfg.bg, display: 'flex', alignItems: 'center', borderLeft: '3px solid ' + cfg.color }}>
                 <Typography variant="caption" fontWeight={700} sx={{ color: cfg.color }}>{cfg.label} ({rowTasks.length})</Typography>
               </Box>
-              <Box sx={{ display: 'flex', gap: 1, p: 1, flex: 1, overflowX: 'auto', minHeight: 60, bgcolor: dragOverCol === status ? '#e8f5e960' : 'transparent' }}>
+              <Box sx={{ display: 'flex', gap: 1, p: 1, flex: 1, overflowX: 'auto', minHeight: 60,
+                bgcolor: isOver ? cfg.color + '08' : 'transparent', transition: 'background-color 0.2s',
+              }}>
                 {rowTasks.map(t => {
                   const subs = t.subtasks || [];
                   const isExp = expandedUkoly.has(t.id);
                   const phB = getPhaseBreakdown(subs);
+                  const isDragged = draggedTaskId === t.id;
+                  const insertBefore = dragInsertInfo?.taskId === t.id && dragInsertInfo.pos === 'before';
+                  const insertAfter = dragInsertInfo?.taskId === t.id && dragInsertInfo.pos === 'after';
                   return (
                     <Card key={t.id} draggable
                       onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
-                      onDragEnd={() => { setDraggedTaskId(null); setDragOverCol(null); }}
+                      onDragEnd={resetDragState}
+                      onDragOver={e => handleCardDragOver(e, t.id, true)}
+                      onDrop={e => handleCardDrop(e, t.id, status, tasks)}
                       onClick={() => toggleUkol(t.id)}
-                      sx={{ minWidth: 180, cursor: 'pointer', borderRadius: 1.5, flexShrink: 0, opacity: draggedTaskId === t.id ? 0.4 : 1, outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 2 } }}>
+                      sx={{ minWidth: 180, cursor: 'pointer', borderRadius: 1.5, flexShrink: 0,
+                        borderLeft: insertBefore ? '3px solid #007638' : undefined,
+                        borderRight: insertAfter ? '3px solid #007638' : undefined,
+                        opacity: isDragged ? 0.3 : 1,
+                        transform: isDragged ? 'scale(0.95) rotate(1deg)' : 'none',
+                        transition: 'opacity 0.2s, transform 0.2s, border 0.15s',
+                        outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 2 } }}>
                       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                           <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
@@ -805,7 +971,7 @@ export default function ProjectsDashboard() {
               </Box>
             </Box>
           );
-        })}
+        }).filter(Boolean)}
       </Box>
       {tasks.filter(t => expandedUkoly.has(t.id)).map(t => {
         const subs = t.subtasks || [];
@@ -1003,6 +1169,11 @@ export default function ProjectsDashboard() {
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Typography variant="h5" fontWeight={700} sx={{ color: COLORS.darkForest }}>Úkoly</Typography>
           <Stack direction="row" spacing={1} alignItems="center">
+            <Tooltip title={hideDone ? 'Zobrazit hotové úkoly' : 'Skrýt hotové úkoly'}>
+              <IconButton size="small" onClick={() => setHideDone(h => !h)} sx={{ color: hideDone ? '#e65100' : 'action.active' }}>
+                {hideDone ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+              </IconButton>
+            </Tooltip>
             <ToggleButtonGroup size="small" exclusive value={taskViewMode} onChange={(_, v) => v && setTaskViewMode(v)}>
               <ToggleButton value="list"><ViewList fontSize="small" /></ToggleButton>
               <ToggleButton value="kanban"><ViewModule fontSize="small" /></ToggleButton>
@@ -1211,8 +1382,27 @@ export default function ProjectsDashboard() {
 
       {/* Delete confirm */}
       <Dialog open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)}>
-        <DialogTitle>Potvrdit smazání</DialogTitle>
-        <DialogContent><Typography>Opravdu chcete smazat tento {deleteTarget?.type === 'project' ? 'projekt' : 'úkol'}? Tato akce je nevratná.</Typography></DialogContent>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <WarningAmber sx={{ color: '#e65100' }} /> Potvrdit smazání
+        </DialogTitle>
+        <DialogContent>
+          {(() => {
+            const info = getDeleteInfo();
+            return (
+              <>
+                <Typography>
+                  Opravdu chcete smazat {deleteTarget?.type === 'project' ? 'projekt' : 'úkol'} <strong>{info?.label}</strong>?
+                </Typography>
+                {info?.details && (
+                  <Alert severity="warning" sx={{ mt: 1.5 }} icon={false}>
+                    {info.details}
+                  </Alert>
+                )}
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Tato akce je nevratná.</Typography>
+              </>
+            );
+          })()}
+        </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteConfirmOpen(false)}>Zrušit</Button>
           <Button variant="contained" color="error" onClick={handleDelete}>Smazat</Button>
