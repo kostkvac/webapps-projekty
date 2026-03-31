@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-DOCS_ROOT = Path("/opt/webapps/projekty/docs")
+DOCS_ROOT = Path("/mnt/projekty-docs")
 
 # Folders to skip when scanning doc repos for task-mapping
 IGNORED_DIRS = {".git", ".obsidian", ".trash", "_resources", "assets", "attachments"}
@@ -65,12 +65,13 @@ def _safe_path(repo: str, filepath: str = "") -> Path:
 
 @router.get("/docs/repos", response_model=list[str])
 async def list_repos():
-    """List all doc repositories (subdirectories of docs/)."""
+    """List all doc repositories (subdirectories of DOCS_ROOT)."""
     if not DOCS_ROOT.is_dir():
         return []
     return sorted(
         d.name for d in DOCS_ROOT.iterdir()
-        if d.is_dir() and (d / ".git").is_dir()
+        if d.is_dir() and not d.name.startswith(".") and d.name not in IGNORED_DIRS
+        and any(d.rglob("*.md"))
     )
 
 
@@ -113,13 +114,34 @@ class DocWriteRequest(BaseModel):
 
 @router.put("/docs/{repo}/file")
 async def write_file(repo: str, path: str, body: DocWriteRequest):
-    """Write content to a markdown file."""
+    """Write content to a markdown file. Auto-commits and pushes if git repo."""
     filepath = _safe_path(repo, path)
     if filepath.suffix.lower() != ".md":
         raise HTTPException(status_code=400, detail="Only .md files are supported")
     if not filepath.parent.is_dir():
         raise HTTPException(status_code=404, detail="Directory not found")
     filepath.write_text(body.content, encoding="utf-8")
+
+    # Auto git commit + push if repo has .git
+    repo_path = _safe_path(repo)
+    git_dir = repo_path / ".git"
+    if git_dir.is_dir():
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "add", str(filepath)],
+                capture_output=True, timeout=10,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo_path), "commit", "-m", f"Update {path}"],
+                capture_output=True, timeout=10,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo_path), "push"],
+                capture_output=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, Exception) as e:
+            logger.warning(f"Git auto-push failed for {repo}/{path}: {e}")
+
     return {"status": "ok", "path": path}
 
 
