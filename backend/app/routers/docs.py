@@ -235,7 +235,7 @@ def _fuzzy_match(text: str, candidate: str) -> bool:
     return False
 
 
-def _match_doc_to_task(doc_file: str, parent_tasks: list) -> int | None:
+def _match_doc_to_task(doc_file: str, parent_tasks: list, matched_ids: set) -> int | None:
     """Match a canvas doc_file path (e.g. 'Elektřina/Natáhnout kabel.md') to a subtask id."""
     parts = doc_file.replace("\\", "/").split("/")
     if len(parts) != 2:
@@ -246,9 +246,17 @@ def _match_doc_to_task(doc_file: str, parent_tasks: list) -> int | None:
     for parent in parent_tasks:
         if not _fuzzy_match(folder_name, parent.title):
             continue
+        # Exact/strong fuzzy match first
         for sub in (parent.subtasks or []):
-            if _fuzzy_match(file_stem, sub.title):
+            if sub.id not in matched_ids and _fuzzy_match(file_stem, sub.title):
                 return sub.id
+        # Fallback: match if any significant word (>3 chars) from file stem appears in subtask title
+        stem_words = [w for w in file_stem.lower().split() if len(w) > 3]
+        for sub in (parent.subtasks or []):
+            if sub.id not in matched_ids:
+                sub_lower = sub.title.lower()
+                if any(w in sub_lower for w in stem_words):
+                    return sub.id
     return None
 
 
@@ -282,14 +290,16 @@ async def get_phases(repo: str, project_id: int, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Match doc files to task IDs
+    # Match doc files to task IDs (track matched to avoid duplicates)
+    matched_ids: set[int] = set()
     result_phases = []
     for phase in phases:
         task_ids = []
         for doc_file in phase["doc_files"]:
-            tid = _match_doc_to_task(doc_file, parent_tasks)
+            tid = _match_doc_to_task(doc_file, parent_tasks, matched_ids)
             if tid is not None:
                 task_ids.append(tid)
+                matched_ids.add(tid)
         result_phases.append({
             "number": phase["number"],
             "label": phase["label"],

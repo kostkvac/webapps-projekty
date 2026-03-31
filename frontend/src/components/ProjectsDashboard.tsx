@@ -65,7 +65,7 @@ export default function ProjectsDashboard() {
   const [sortBy, setSortBy] = useState<'status' | 'priority' | 'name' | 'progress'>('status');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterPriority, setFilterPriority] = useState<string>('all');
-  const [taskViewMode, setTaskViewMode] = useState<'list' | 'kanban' | 'swimlane'>('list');
+  const [taskViewMode, setTaskViewMode] = useState<'list' | 'kanban' | 'swimlane'>('swimlane');
   const [expandedUkoly, setExpandedUkoly] = useState<Set<number>>(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState<number | null>(null);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
@@ -650,7 +650,7 @@ export default function ProjectsDashboard() {
                     size="small"
                     icon={pb.doneCount === pb.count ? <Done sx={{ fontSize: 12 }} /> : undefined}
                     sx={{
-                      height: 18, fontSize: '0.62rem', fontWeight: 700,
+                      height: 20, fontSize: '0.68rem', fontWeight: 700,
                       bgcolor: pb.doneCount === pb.count ? pb.color + '22' : pb.phase.number <= (phasesData?.current_phase || 1) ? pb.color + '18' : '#f5f5f5',
                       color: pb.doneCount === pb.count ? pb.color : pb.phase.number <= (phasesData?.current_phase || 1) ? pb.color : '#999',
                       border: '1px solid ' + (pb.phase.number <= (phasesData?.current_phase || 1) ? pb.color + '44' : '#e0e0e0'),
@@ -663,7 +663,6 @@ export default function ProjectsDashboard() {
             )}
           </Box>
           <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
-            {subs.length > 0 && <Chip label={doneCount + '/' + subs.length} size="small" variant="outlined" sx={{ fontSize: '0.68rem' }} />}
             {sChip(task.status, TASK_CFG)} {pChip(task.priority)}
             {(task.comments?.length || 0) > 0 && (
               <Badge badgeContent={task.comments?.length} color="primary"><Comment fontSize="small" color="action" /></Badge>
@@ -724,10 +723,9 @@ export default function ProjectsDashboard() {
                         </Box>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
-                          {subs.length > 0 && <Chip label={subs.filter(s => s.status === 'done').length + '/' + subs.length + ' pod.'} size="small" variant="outlined" sx={{ fontSize: '0.62rem' }} />}
                           {phB.map(pb => (
                             <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
-                              sx={{ height: 16, fontSize: '0.58rem', fontWeight: 700, bgcolor: pb.color + '18', color: pb.color, border: '1px solid ' + pb.color + '33', '& .MuiChip-label': { px: 0.4 } }} />
+                              sx={{ height: 20, fontSize: '0.68rem', fontWeight: 700, bgcolor: pb.color + '18', color: pb.color, border: '1px solid ' + pb.color + '33', '& .MuiChip-label': { px: 0.5 } }} />
                           ))}
                         </Stack>
                       </CardContent>
@@ -795,10 +793,9 @@ export default function ProjectsDashboard() {
                         </Box>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
-                          {subs.length > 0 && <Chip label={subs.filter(s => s.status === 'done').length + '/' + subs.length + ' pod.'} size="small" variant="outlined" sx={{ fontSize: '0.62rem' }} />}
                           {phB.map(pb => (
                             <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
-                              sx={{ height: 16, fontSize: '0.58rem', fontWeight: 700, bgcolor: pb.color + '18', color: pb.color, border: '1px solid ' + pb.color + '33', '& .MuiChip-label': { px: 0.4 } }} />
+                              sx={{ height: 20, fontSize: '0.68rem', fontWeight: 700, bgcolor: pb.color + '18', color: pb.color, border: '1px solid ' + pb.color + '33', '& .MuiChip-label': { px: 0.5 } }} />
                           ))}
                         </Stack>
                       </CardContent>
