@@ -700,6 +700,7 @@ export default function ProjectsDashboard() {
                       {pChip(sub.priority)}
                       <Box sx={{ ml: 'auto' }}>
                         <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(sub); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                        <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: sub.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
                       </Box>
                     </Stack>
                   </CardContent>
@@ -860,7 +861,10 @@ export default function ProjectsDashboard() {
                       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                           <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
-                          <IconButton size="small" sx={{ p: 0.25, ml: 0.5 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                          <Box sx={{ flexShrink: 0 }}>
+                            <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                            <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: t.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
+                          </Box>
                         </Box>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
@@ -955,7 +959,10 @@ export default function ProjectsDashboard() {
                       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                           <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
-                          <IconButton size="small" sx={{ p: 0.25, ml: 0.5 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                          <Box sx={{ flexShrink: 0 }}>
+                            <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                            <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: t.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
+                          </Box>
                         </Box>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
@@ -1374,9 +1381,17 @@ export default function ProjectsDashboard() {
             )}
           </Stack>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => { setTaskDialogOpen(false); setParentForNewTask(null); }}>Zrušit</Button>
-          <Button variant="contained" onClick={handleSaveTask}>{editingTask?.id ? 'Uložit' : 'Vytvořit'}</Button>
+        <DialogActions sx={{ justifyContent: editingTask?.id ? 'space-between' : 'flex-end' }}>
+          {editingTask?.id && (
+            <Button color="error" startIcon={<Delete fontSize="small" />}
+              onClick={() => { setTaskDialogOpen(false); setDeleteTarget({ type: 'task', id: editingTask.id! }); setDeleteConfirmOpen(true); }}>
+              Smazat
+            </Button>
+          )}
+          <Box>
+            <Button onClick={() => { setTaskDialogOpen(false); setParentForNewTask(null); }} sx={{ mr: 1 }}>Zrušit</Button>
+            <Button variant="contained" onClick={handleSaveTask}>{editingTask?.id ? 'Uložit' : 'Vytvořit'}</Button>
+          </Box>
         </DialogActions>
       </Dialog>
 
