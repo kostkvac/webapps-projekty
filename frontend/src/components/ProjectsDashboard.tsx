@@ -596,12 +596,31 @@ export default function ProjectsDashboard() {
     return renderSubKanban(subs, parentId, parentTitle);
   };
 
+  // Phase breakdown for a parent task's subtasks
+  const getPhaseBreakdown = (subs: Task[]): { phase: PhaseInfo; count: number; doneCount: number; color: string }[] => {
+    if (!phasesData || phasesData.phases.length === 0) return [];
+    const result: { phase: PhaseInfo; count: number; doneCount: number; color: string }[] = [];
+    for (const phase of phasesData.phases) {
+      const matching = subs.filter(s => phase.task_ids.includes(s.id));
+      if (matching.length > 0) {
+        result.push({
+          phase,
+          count: matching.length,
+          doneCount: matching.filter(s => s.status === 'done').length,
+          color: PHASE_COLORS[(phase.number - 1) % PHASE_COLORS.length],
+        });
+      }
+    }
+    return result;
+  };
+
   // ======== ÚKOL ROW ========
   const renderUkolRow = (task: Task) => {
     const subs = task.subtasks || [];
     const isExp = expandedUkoly.has(task.id);
     const doneCount = subs.filter(s => s.status === 'done').length;
     const tc = TASK_CFG[task.status] || TASK_CFG.backlog;
+    const phBreakdown = getPhaseBreakdown(subs);
     return (
       <Box key={task.id} sx={{ mb: 1 }}>
         <Paper sx={{ p: 1.5, display: 'flex', alignItems: 'flex-start', gap: 1, borderRadius: 2, borderLeft: '4px solid ' + tc.color, ...(subs.length > 0 && isExp ? { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 } : {}) }}>
@@ -622,6 +641,25 @@ export default function ProjectsDashboard() {
             <Typography variant="subtitle2" fontWeight={700} sx={{ textDecoration: task.status === 'done' ? 'line-through' : 'none' }}>{task.title}</Typography>
             {task.description && (
               <Typography variant="caption" color="text.secondary" sx={{ display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{task.description}</Typography>
+            )}
+            {phBreakdown.length > 0 && (
+              <Stack direction="row" spacing={0.5} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
+                {phBreakdown.map(pb => (
+                  <Chip key={pb.phase.number}
+                    label={`F${pb.phase.number}: ${pb.doneCount}/${pb.count}`}
+                    size="small"
+                    icon={pb.doneCount === pb.count ? <Done sx={{ fontSize: 12 }} /> : undefined}
+                    sx={{
+                      height: 18, fontSize: '0.62rem', fontWeight: 700,
+                      bgcolor: pb.doneCount === pb.count ? pb.color + '22' : pb.phase.number <= (phasesData?.current_phase || 1) ? pb.color + '18' : '#f5f5f5',
+                      color: pb.doneCount === pb.count ? pb.color : pb.phase.number <= (phasesData?.current_phase || 1) ? pb.color : '#999',
+                      border: '1px solid ' + (pb.phase.number <= (phasesData?.current_phase || 1) ? pb.color + '44' : '#e0e0e0'),
+                      '& .MuiChip-label': { px: 0.5 },
+                      '& .MuiChip-icon': { ml: 0.25 },
+                    }}
+                  />
+                ))}
+              </Stack>
             )}
           </Box>
           <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
@@ -672,6 +710,7 @@ export default function ProjectsDashboard() {
                 {colTasks.map(t => {
                   const subs = t.subtasks || [];
                   const isExp = expandedUkoly.has(t.id);
+                  const phB = getPhaseBreakdown(subs);
                   return (
                     <Card key={t.id} draggable
                       onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
@@ -683,9 +722,13 @@ export default function ProjectsDashboard() {
                           <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
                           <IconButton size="small" sx={{ p: 0.25, ml: 0.5 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
                         </Box>
-                        <Stack direction="row" spacing={0.5}>
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
                           {subs.length > 0 && <Chip label={subs.filter(s => s.status === 'done').length + '/' + subs.length + ' pod.'} size="small" variant="outlined" sx={{ fontSize: '0.62rem' }} />}
+                          {phB.map(pb => (
+                            <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
+                              sx={{ height: 16, fontSize: '0.58rem', fontWeight: 700, bgcolor: pb.color + '18', color: pb.color, border: '1px solid ' + pb.color + '33', '& .MuiChip-label': { px: 0.4 } }} />
+                          ))}
                         </Stack>
                       </CardContent>
                     </Card>
@@ -738,6 +781,7 @@ export default function ProjectsDashboard() {
                 {rowTasks.map(t => {
                   const subs = t.subtasks || [];
                   const isExp = expandedUkoly.has(t.id);
+                  const phB = getPhaseBreakdown(subs);
                   return (
                     <Card key={t.id} draggable
                       onDragStart={e => { setDraggedTaskId(t.id); e.dataTransfer.effectAllowed = 'move'; }}
@@ -749,9 +793,13 @@ export default function ProjectsDashboard() {
                           <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
                           <IconButton size="small" sx={{ p: 0.25, ml: 0.5 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
                         </Box>
-                        <Stack direction="row" spacing={0.5}>
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
                           {subs.length > 0 && <Chip label={subs.filter(s => s.status === 'done').length + '/' + subs.length + ' pod.'} size="small" variant="outlined" sx={{ fontSize: '0.62rem' }} />}
+                          {phB.map(pb => (
+                            <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
+                              sx={{ height: 16, fontSize: '0.58rem', fontWeight: 700, bgcolor: pb.color + '18', color: pb.color, border: '1px solid ' + pb.color + '33', '& .MuiChip-label': { px: 0.4 } }} />
+                          ))}
                         </Stack>
                       </CardContent>
                     </Card>
