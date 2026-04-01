@@ -321,6 +321,14 @@ export const docsApi = {
     const r = await api.get<Record<string, { file_count: number; fingerprint: string }>>('/docs/check-changes');
     return r.data;
   },
+  generatePhaseSummary: async (repo: string): Promise<{ status: string; message: string }> => {
+    const r = await api.post<{ status: string; message: string }>(`/docs/${repo}/generate-phase-summary`);
+    return r.data;
+  },
+  phaseSummaryStatus: async (repo: string): Promise<{ status: string; error?: string; file?: string }> => {
+    const r = await api.get<{ status: string; error?: string; file?: string }>(`/docs/${repo}/phase-summary-status`);
+    return r.data;
+  },
 };
 
 export default projectsApi;

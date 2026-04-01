@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
@@ -583,3 +583,73 @@ async def check_doc_changes():
             except Exception:
                 pass
     return result
+
+
+# ── AI Phase Summary ──────────────────────────────────────────────────────
+
+_STATUS_DIR = Path("/opt/webapps/projekty/data/logs")
+
+
+def _status_file(repo: str) -> Path:
+    return _STATUS_DIR / f"summary_status_{repo}.json"
+
+
+def _write_status(repo: str, status: dict):
+    _STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    _status_file(repo).write_text(json.dumps(status), encoding="utf-8")
+
+
+def _read_status(repo: str) -> dict:
+    sf = _status_file(repo)
+    if sf.exists():
+        try:
+            return json.loads(sf.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"status": "idle"}
+
+
+async def _generate_summary_task(repo: str, project_name: str):
+    """Background task: generate AI phase summary and write to docs."""
+    from app.services.ai_phase_summary import generate_phase_summary
+    repo_path = _safe_path(repo)
+    canvas_files = list(repo_path.glob("*.canvas"))
+    try:
+        if not canvas_files:
+            _write_status(repo, {"status": "error", "error": "Žádný .canvas soubor"})
+            return
+        md = await generate_phase_summary(repo_path, canvas_files[0], project_name)
+        out_path = repo_path / "Souhrnná dokumentace fází.md"
+        out_path.write_text(md, encoding="utf-8")
+        _write_status(repo, {"status": "done", "file": str(out_path.name)})
+        logger.info("Phase summary written to %s", out_path)
+    except Exception as e:
+        logger.error("Phase summary generation failed: %s", e)
+        _write_status(repo, {"status": "error", "error": str(e)})
+
+
+@router.post("/docs/{repo}/generate-phase-summary")
+async def generate_phase_summary_endpoint(
+    repo: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Trigger AI generation of a phase summary document."""
+    repo_path = _safe_path(repo)
+    canvas_files = list(repo_path.glob("*.canvas"))
+    if not canvas_files:
+        raise HTTPException(status_code=404, detail="No .canvas file found in repo")
+
+    # Find project name for this repo
+    project = db.query(Project).filter(Project.docs_repo == repo).first()
+    project_name = project.name if project else repo
+
+    _write_status(repo, {"status": "generating"})
+    background_tasks.add_task(_generate_summary_task, repo, project_name)
+    return {"status": "started", "message": "Generování souhrnu zahájeno"}
+
+
+@router.get("/docs/{repo}/phase-summary-status")
+async def phase_summary_status(repo: str):
+    """Check status of phase summary generation."""
+    return _read_status(repo)

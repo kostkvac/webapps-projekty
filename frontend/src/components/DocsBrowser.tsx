@@ -8,6 +8,7 @@ import {
 import {
   Folder, Description, ArrowBack, Sync, SyncProblem,
   CloudDone, CloudDownload, CheckCircle, Schedule,
+  AutoAwesome,
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -36,6 +37,7 @@ export default function DocsBrowser({ repo, projectId, onBack, onTasksChanged }:
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
     open: false, message: '', severity: 'success',
   });
+  const [generating, setGenerating] = useState(false);
 
   const loadFiles = useCallback(async (subdir: string = '') => {
     setLoading(true);
@@ -122,6 +124,35 @@ export default function DocsBrowser({ repo, projectId, onBack, onTasksChanged }:
     }
   };
 
+  const handleGenerateSummary = async () => {
+    setGenerating(true);
+    setSnackbar({ open: true, message: '🤖 Generuji souhrn fází pomocí AI...', severity: 'info' });
+    try {
+      await docsApi.generatePhaseSummary(repo);
+      // Poll status every 3s, max 2 min
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const st = await docsApi.phaseSummaryStatus(repo);
+        if (st.status === 'done') {
+          setSnackbar({ open: true, message: `✅ Souhrn vygenerován: ${st.file}`, severity: 'success' });
+          loadFiles(currentDir);
+          setGenerating(false);
+          return;
+        }
+        if (st.status === 'error') {
+          setSnackbar({ open: true, message: `❌ Chyba: ${st.error}`, severity: 'error' });
+          setGenerating(false);
+          return;
+        }
+      }
+      setSnackbar({ open: true, message: 'Generování trvá příliš dlouho', severity: 'error' });
+    } catch {
+      setSnackbar({ open: true, message: 'Nepodařilo se spustit generování', severity: 'error' });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const navigateBreadcrumb = (index: number) => {
     if (docContent) {
       setDocContent(null);
@@ -175,6 +206,18 @@ export default function DocsBrowser({ repo, projectId, onBack, onTasksChanged }:
               <IconButton size="small" onClick={checkAndSync} disabled={syncing} sx={{ color: 'white' }}>
                 <Sync fontSize="small" sx={{ animation: syncing ? 'spin 1s linear infinite' : 'none', '@keyframes spin': { '0%': { transform: 'rotate(0deg)' }, '100%': { transform: 'rotate(360deg)' } } }} />
               </IconButton>
+            </Tooltip>
+            <Tooltip title="Generovat AI souhrn fází">
+              <span>
+                <Button
+                  size="small" variant="contained"
+                  startIcon={generating ? <CircularProgress size={14} color="inherit" /> : <AutoAwesome fontSize="small" />}
+                  onClick={handleGenerateSummary} disabled={generating}
+                  sx={{ bgcolor: 'rgba(255,255,255,0.2)', '&:hover': { bgcolor: 'rgba(255,255,255,0.3)' }, textTransform: 'none', fontWeight: 600 }}
+                >
+                  {generating ? 'Generuji...' : 'AI Souhrn'}
+                </Button>
+              </span>
             </Tooltip>
             {syncInfo && !syncInfo.is_synced && (
               <Button
