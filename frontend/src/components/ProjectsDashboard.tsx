@@ -14,7 +14,7 @@ import {
 import {
   Add, Edit, Delete, FolderOpen, ArrowBack,
   Schedule, Science, ViewModule, ViewList, ViewStream,
-  FilterList, PriorityHigh, Flag, PlayArrow, Pause, Done, Block,
+  FilterList, PriorityHigh, Flag, PlayArrow, Done, Block,
   ExpandMore, ChevronRight, SubdirectoryArrowRight,
   BugReport, Lightbulb, NoteAlt, CheckCircle,
   Rocket, History, StickyNote2, Comment, ArrowForward, MenuBook,
@@ -31,7 +31,6 @@ const STATUS_CFG: Record<string, { label: string; color: string; bg: string; ico
   planning:    { label: 'Plánování', color: '#1565c0', bg: '#e3f2fd' },
   in_progress: { label: 'Probíhá', color: COLORS.emerald, bg: '#e8f5e9', icon: <PlayArrow fontSize="small" /> },
   testing:     { label: 'Testování', color: '#e65100', bg: '#fff3e0', icon: <Science fontSize="small" /> },
-  review:      { label: 'Review',     color: '#f57c00', bg: '#fff8e1', icon: <Pause fontSize="small" /> },
   done:        { label: 'Hotovo',     color: '#2e7d32', bg: '#c8e6c9', icon: <Done fontSize="small" /> },
   archived:    { label: 'Blokováno', color: '#c62828', bg: '#ffebee', icon: <Block fontSize="small" /> },
 };
@@ -53,7 +52,7 @@ const PRI_CFG: Record<string, { label: string; color: string; icon?: ReactElemen
 };
 
 const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'testing', 'done', 'blocked'];
-const PROJ_STATUSES = ['backlog', 'planning', 'in_progress', 'testing', 'review', 'done', 'archived'];
+const PROJ_STATUSES = ['backlog', 'planning', 'in_progress', 'testing', 'done', 'archived'];
 
 export default function ProjectsDashboard() {
   const [view, setView] = useState<'overview' | 'project'>('overview');
@@ -64,7 +63,7 @@ export default function ProjectsDashboard() {
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({ open: false, message: '', severity: 'success' });
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'status' | 'priority' | 'name' | 'progress'>('status');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<Set<string>>(new Set());
   const [filterPriority, setFilterPriority] = useState<string>('all');
   const [filterLabels, setFilterLabels] = useState<Set<number>>(new Set());
   const [taskViewMode, setTaskViewMode] = useState<'list' | 'kanban' | 'swimlane'>('swimlane');
@@ -458,17 +457,16 @@ export default function ProjectsDashboard() {
   };
 
   const toggleFilterLabel = (id: number) => {
-    setFilterLabels(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+    setFilterLabels(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  };
+  const toggleFilterStatus = (s: string) => {
+    setFilterStatus(prev => { const next = new Set(prev); if (next.has(s)) next.delete(s); else next.add(s); return next; });
   };
 
   const filteredProjects = projects
     .filter(p =>
       (!searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.description || '').toLowerCase().includes(searchQuery.toLowerCase()))
-      && (filterStatus === 'all' || p.status === filterStatus)
+      && (filterStatus.size === 0 || filterStatus.has(p.status))
       && (filterPriority === 'all' || p.priority === filterPriority)
       && (filterLabels.size === 0 || [...filterLabels].some(lid => p.labels.some(l => l.id === lid)))
     )
@@ -498,13 +496,6 @@ export default function ProjectsDashboard() {
           onChange={e => setSearchQuery(e.target.value)} sx={{ minWidth: 200 }}
           InputProps={{ startAdornment: <FilterList fontSize="small" sx={{ mr: 0.5, color: 'action.active' }} /> }}
         />
-        <FormControl size="small" sx={{ minWidth: 130 }}>
-          <InputLabel>Stav</InputLabel>
-          <Select value={filterStatus} label="Stav" onChange={e => setFilterStatus(e.target.value)}>
-            <MenuItem value="all">Všechny</MenuItem>
-            {PROJ_STATUSES.map(s => <MenuItem key={s} value={s}>{STATUS_CFG[s]?.label || s}</MenuItem>)}
-          </Select>
-        </FormControl>
         <FormControl size="small" sx={{ minWidth: 130 }}>
           <InputLabel>Priorita</InputLabel>
           <Select value={filterPriority} label="Priorita" onChange={e => setFilterPriority(e.target.value)}>
