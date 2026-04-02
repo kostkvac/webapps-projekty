@@ -66,6 +66,7 @@ export default function ProjectsDashboard() {
   const [sortBy, setSortBy] = useState<'status' | 'priority' | 'name' | 'progress'>('status');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterPriority, setFilterPriority] = useState<string>('all');
+  const [filterLabels, setFilterLabels] = useState<Set<number>>(new Set());
   const [taskViewMode, setTaskViewMode] = useState<'list' | 'kanban' | 'swimlane'>('swimlane');
   const [expandedUkoly, setExpandedUkoly] = useState<Set<number>>(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState<number | null>(null);
@@ -456,11 +457,20 @@ export default function ProjectsDashboard() {
     setTaskDialogOpen(true);
   };
 
+  const toggleFilterLabel = (id: number) => {
+    setFilterLabels(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
   const filteredProjects = projects
     .filter(p =>
       (!searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.description || '').toLowerCase().includes(searchQuery.toLowerCase()))
       && (filterStatus === 'all' || p.status === filterStatus)
       && (filterPriority === 'all' || p.priority === filterPriority)
+      && (filterLabels.size === 0 || [...filterLabels].some(lid => p.labels.some(l => l.id === lid)))
     )
     .sort((a, b) => {
       if (sortBy === 'status') return PROJ_STATUSES.indexOf(a.status) - PROJ_STATUSES.indexOf(b.status);
@@ -512,6 +522,35 @@ export default function ProjectsDashboard() {
           </Select>
         </FormControl>
       </Stack>
+      {allLabels.length > 0 && (
+        <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, mr: 0.5 }}>Štítky:</Typography>
+          {allLabels.map(lbl => {
+            const active = filterLabels.has(lbl.id);
+            return (
+              <Chip
+                key={lbl.id}
+                label={lbl.name}
+                size="small"
+                onClick={() => toggleFilterLabel(lbl.id)}
+                sx={{
+                  cursor: 'pointer',
+                  fontWeight: active ? 700 : 400,
+                  bgcolor: active ? lbl.color : lbl.color + '22',
+                  color: active ? '#fff' : lbl.color,
+                  border: `1px solid ${lbl.color}66`,
+                  '&:hover': { bgcolor: active ? lbl.color + 'cc' : lbl.color + '44' },
+                  transition: 'all 0.15s',
+                }}
+              />
+            );
+          })}
+          {filterLabels.size > 0 && (
+            <Chip label="Zrušit filtry" size="small" variant="outlined" onClick={() => setFilterLabels(new Set())}
+              sx={{ cursor: 'pointer', color: 'text.secondary' }} />
+          )}
+        </Stack>
+      )}
       <Stack spacing={1}>
         {filteredProjects.map(project => {
           const sc = STATUS_CFG[project.status] || STATUS_CFG.backlog;
