@@ -32,7 +32,7 @@ const STATUS_CFG: Record<string, { label: string; color: string; bg: string; ico
   in_progress: { label: 'Probíhá', color: COLORS.emerald, bg: '#e8f5e9', icon: <PlayArrow fontSize="small" /> },
   testing:     { label: 'Testování', color: '#e65100', bg: '#fff3e0', icon: <Science fontSize="small" /> },
   done:        { label: 'Hotovo',     color: '#2e7d32', bg: '#c8e6c9', icon: <Done fontSize="small" /> },
-  archived:    { label: 'Blokováno', color: '#c62828', bg: '#ffebee', icon: <Block fontSize="small" /> },
+  archived:    { label: 'Pozastaveno', color: '#c62828', bg: '#ffebee', icon: <Block fontSize="small" /> },
 };
 
 const TASK_CFG: Record<string, { label: string; color: string; bg: string }> = {
