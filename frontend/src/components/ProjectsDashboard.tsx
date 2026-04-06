@@ -513,6 +513,31 @@ export default function ProjectsDashboard() {
           </Select>
         </FormControl>
       </Stack>
+      <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
+        <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, mr: 0.5 }}>Stav:</Typography>
+        {PROJ_STATUSES.map(s => {
+          const cfg = STATUS_CFG[s];
+          const active = filterStatus.has(s);
+          return (
+            <Chip key={s} label={cfg?.label || s} size="small"
+              onClick={() => toggleFilterStatus(s)}
+              sx={{
+                cursor: 'pointer',
+                fontWeight: active ? 700 : 400,
+                bgcolor: active ? cfg?.color : (cfg?.color || '#999') + '22',
+                color: active ? '#fff' : cfg?.color,
+                border: `1px solid ${cfg?.color || '#999'}66`,
+                '&:hover': { bgcolor: active ? (cfg?.color || '#999') + 'cc' : (cfg?.color || '#999') + '44' },
+                transition: 'all 0.15s',
+              }}
+            />
+          );
+        })}
+        {filterStatus.size > 0 && (
+          <Chip label="Zrušit" size="small" variant="outlined" onClick={() => setFilterStatus(new Set())}
+            sx={{ cursor: 'pointer', color: 'text.secondary' }} />
+        )}
+      </Stack>
       {allLabels.length > 0 && (
         <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
           <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, mr: 0.5 }}>Štítky:</Typography>
