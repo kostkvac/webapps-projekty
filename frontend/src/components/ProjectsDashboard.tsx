@@ -800,7 +800,7 @@ export default function ProjectsDashboard() {
                   onDragEnd={resetDragState}
                   onDragOver={e => handleCardDragOver(e, sub.id)}
                   onDrop={e => handleCardDrop(e, sub.id, status, subs)}
-                  onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
+                  onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : setPreviewTask(sub)}
                   sx={{ mb: 0.75, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1,
                     borderLeft: '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
                     borderTop: insertBefore ? '3px solid #007638' : undefined,
@@ -880,7 +880,7 @@ export default function ProjectsDashboard() {
                   onDragEnd={resetDragState}
                   onDragOver={e => handleCardDragOver(e, sub.id, true)}
                   onDrop={e => handleCardDrop(e, sub.id, status, subs)}
-                  onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : openTaskDialog(sub)}
+                  onClick={() => selectedProject?.docs_repo ? openDocDetail(sub, parentTitle) : setPreviewTask(sub)}
                   sx={{ minWidth: 150, cursor: blocked ? 'not-allowed' : 'pointer', borderRadius: 1, flexShrink: 0,
                     borderLeft: insertBefore ? '3px solid #007638' : '2px solid ' + (PRI_CFG[sub.priority] || PRI_CFG.medium).color,
                     borderRight: insertAfter ? '3px solid #007638' : undefined,
