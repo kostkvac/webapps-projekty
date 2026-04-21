@@ -12,13 +12,13 @@ import {
 } from '@mui/material';
 // Grid import removed - using row-based layout
 import {
-  Add, Edit, Delete, FolderOpen, ArrowBack,
+  Add, Edit, Delete, ContentCopy, FolderOpen, ArrowBack,
   Schedule, Science, ViewModule, ViewList, ViewStream,
   FilterList, PriorityHigh, Flag, PlayArrow, Done, Block,
   ExpandMore, ChevronRight, SubdirectoryArrowRight,
   BugReport, Lightbulb, NoteAlt, CheckCircle,
   Rocket, History, StickyNote2, Comment, ArrowForward, MenuBook,
-  VisibilityOff, Visibility, WarningAmber,
+  VisibilityOff, Visibility, WarningAmber, InfoOutlined,
 } from '@mui/icons-material';
 import projectsApi from '../api/projects';
 import { docsApi } from '../api/projects';
@@ -53,6 +53,7 @@ const PRI_CFG: Record<string, { label: string; color: string; icon?: ReactElemen
 
 const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'testing', 'done', 'blocked'];
 const PROJ_STATUSES = ['backlog', 'planning', 'in_progress', 'testing', 'done', 'archived'];
+const PROJ_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 
 export default function ProjectsDashboard() {
   const [view, setView] = useState<'overview' | 'project'>('overview');
@@ -70,6 +71,8 @@ export default function ProjectsDashboard() {
   const [expandedUkoly, setExpandedUkoly] = useState<Set<number>>(new Set());
   const [draggedTaskId, setDraggedTaskId] = useState<number | null>(null);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
+  const [draggedProjectId, setDraggedProjectId] = useState<number | null>(null);
+  const [projDragOverLane, setProjDragOverLane] = useState<string | null>(null);
   const [dragInsertInfo, setDragInsertInfo] = useState<{ taskId: number; pos: 'before' | 'after' } | null>(null);
   const [taskPrevStatus, setTaskPrevStatus] = useState<Record<number, string>>({});
   const [hideDone, setHideDone] = useState(false);
@@ -77,11 +80,15 @@ export default function ProjectsDashboard() {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Partial<Project> & { label_ids?: number[] } | null>(null);
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [isDuplicating, setIsDuplicating] = useState(false);
+  const [copySubtasks, setCopySubtasks] = useState(false);
+  const [duplicateSourceSubtasks, setDuplicateSourceSubtasks] = useState<Task[]>([]);
   const [editingTask, setEditingTask] = useState<Partial<Task> | null>(null);
   const [parentForNewTask, setParentForNewTask] = useState<number | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ type: 'project' | 'task'; id: number } | null>(null);
   const [labelsDialogOpen, setLabelsDialogOpen] = useState(false);
+  const [previewTask, setPreviewTask] = useState<Task | null>(null);
   const [editingLabel, setEditingLabel] = useState<{ name: string; color: string; description: string }>({ name: '', color: '#4caf50', description: '' });
   const [commentText, setCommentText] = useState('');
   const [noteText, setNoteText] = useState('');
@@ -279,10 +286,23 @@ export default function ProjectsDashboard() {
         await projectsApi.updateTask(editingTask.id, editingTask);
         showSnack('Uloženo');
       } else {
-        await projectsApi.createTask(selectedProject.id, { ...editingTask, parent_task_id: parentForNewTask });
-        showSnack(parentForNewTask ? 'Pod-úkol přidán' : 'Úkol přidán');
+        const created = await projectsApi.createTask(selectedProject.id, { ...editingTask, parent_task_id: parentForNewTask });
+        if (isDuplicating && copySubtasks && duplicateSourceSubtasks.length > 0) {
+          for (const sub of duplicateSourceSubtasks) {
+            await projectsApi.createTask(selectedProject.id, {
+              title: sub.title, description: sub.description, status: sub.status,
+              priority: sub.priority, task_type: sub.task_type,
+              estimated_hours: sub.estimated_hours, due_date: sub.due_date,
+              parent_task_id: created.id,
+            });
+          }
+          showSnack(`Duplikováno včetně ${duplicateSourceSubtasks.length} pod-úkolů`);
+        } else {
+          showSnack(parentForNewTask ? 'Pod-úkol přidán' : 'Úkol přidán');
+        }
       }
       setTaskDialogOpen(false); setEditingTask(null); setParentForNewTask(null);
+      setIsDuplicating(false); setCopySubtasks(false); setDuplicateSourceSubtasks([]);
       loadProjectDetail(selectedProject.id); loadProjects();
     } catch { showSnack('Nepodařilo se uložit', 'error'); }
   };
@@ -452,6 +472,26 @@ export default function ProjectsDashboard() {
   const openTaskDialog = (task: Partial<Task> | null, parentId: number | null = null) => {
     setEditingTask(task ?? { status: 'backlog', priority: 'medium', task_type: 'task' });
     setParentForNewTask(parentId);
+    setIsDuplicating(false);
+    setCommentText(''); setNoteText(''); setShowAudit(false);
+    setTaskDialogOpen(true);
+  };
+
+  const openDuplicateDialog = (task: Task) => {
+    setEditingTask({
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      priority: task.priority,
+      task_type: task.task_type,
+      estimated_hours: task.estimated_hours,
+      due_date: task.due_date,
+    });
+    setParentForNewTask(task.parent_task_id);
+    const subs = task.subtasks || [];
+    setDuplicateSourceSubtasks(subs);
+    setCopySubtasks(subs.length > 0);
+    setIsDuplicating(true);
     setCommentText(''); setNoteText(''); setShowAudit(false);
     setTaskDialogOpen(true);
   };
@@ -477,6 +517,102 @@ export default function ProjectsDashboard() {
       if (sortBy === 'progress') return (b.progress_percent || 0) - (a.progress_percent || 0);
       return 0;
     });
+
+  const handleProjDrop = async (projectId: number, groupBy: 'status' | 'priority', newValue: string) => {
+    try {
+      await projectsApi.update(projectId, groupBy === 'status' ? { status: newValue } : { priority: newValue });
+      loadProjects();
+    } catch { showSnack('Nepodařilo se přesunout', 'error'); }
+  };
+
+  const renderProjectSwimlane = (groupBy: 'status' | 'priority') => {
+    const groups = groupBy === 'status'
+      ? PROJ_STATUSES.map(key => ({ key, color: STATUS_CFG[key]?.color || '#999', bg: STATUS_CFG[key]?.bg || '#f5f5f5', label: STATUS_CFG[key]?.label || key }))
+      : PROJ_PRIORITIES.map(key => ({ key, color: PRI_CFG[key]?.color || '#999', bg: (PRI_CFG[key]?.color || '#999') + '22', label: PRI_CFG[key]?.label || key }));
+    return (
+      <Box>
+        {groups.map(({ key, color, bg, label }) => {
+          const laneProjects = filteredProjects.filter(p => groupBy === 'status' ? p.status === key : p.priority === key);
+          const isOver = projDragOverLane === key;
+          return (
+            <Box key={key} sx={{ mb: 2 }}
+              onDragOver={e => { e.preventDefault(); setProjDragOverLane(key); }}
+              onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setProjDragOverLane(null); }}
+              onDrop={e => { e.preventDefault(); if (draggedProjectId !== null) handleProjDrop(draggedProjectId, groupBy, key); setProjDragOverLane(null); setDraggedProjectId(null); }}>
+              {/* Group header */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75, px: 0.5 }}>
+                <Box sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: color, flexShrink: 0 }} />
+                <Typography variant="overline" fontWeight={700} sx={{ color, lineHeight: 1, letterSpacing: 1 }}>{label}</Typography>
+                <Chip label={laneProjects.length} size="small" sx={{ height: 18, bgcolor: color + '22', color, fontSize: '0.68rem', '& .MuiChip-label': { px: 0.75 } }} />
+                <Box sx={{ flex: 1, height: 1, bgcolor: color + '33' }} />
+              </Box>
+              {/* Project rows — same style as flat list */}
+              <Stack spacing={1} sx={{
+                pl: 1,
+                borderLeft: `3px solid ${isOver ? color : 'transparent'}`,
+                borderRadius: '0 0 0 4px',
+                bgcolor: isOver ? color + '06' : 'transparent',
+                transition: 'all 0.15s',
+                minHeight: laneProjects.length === 0 ? 48 : undefined,
+              }}>
+                {laneProjects.map(project => {
+                  const sc = STATUS_CFG[project.status] || STATUS_CFG.backlog;
+                  const isDragged = draggedProjectId === project.id;
+                  return (
+                    <Paper key={project.id} draggable
+                      onDragStart={e => { setDraggedProjectId(project.id); e.dataTransfer.effectAllowed = 'move'; }}
+                      onDragEnd={() => { setDraggedProjectId(null); setProjDragOverLane(null); }}
+                      sx={{ display: 'flex', alignItems: 'center', gap: 2, px: 2, py: 1.5, borderRadius: 2,
+                        borderLeft: '4px solid ' + sc.color, cursor: 'grab', transition: 'all 0.15s',
+                        opacity: isDragged ? 0.3 : 1,
+                        transform: isDragged ? 'scale(0.98)' : 'none',
+                        '&:hover': { boxShadow: 3, bgcolor: '#fafffe' } }}
+                      onClick={() => !isDragged && openProject(project.id)}>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.25 }}>
+                          <Typography variant="subtitle1" fontWeight={700} noWrap>{project.name}</Typography>
+                          {project.docs_repo && <MenuBook sx={{ fontSize: 16, color: '#1565c0' }} />}
+                        </Box>
+                        {project.description && (
+                          <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 500 }}>{project.description}</Typography>
+                        )}
+                      </Box>
+                      <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
+                        {sChip(project.status, STATUS_CFG)} {pChip(project.priority)}
+                        {project.task_count > 0 && <Chip label={project.task_count + ' úkolů'} size="small" variant="outlined" />}
+                      </Stack>
+                      {project.labels?.length > 0 && (
+                        <Stack direction="row" spacing={0.5} flexShrink={0}>
+                          {project.labels.slice(0, 3).map(l => <Chip key={l.id} label={l.name} size="small" sx={{ bgcolor: l.color + '22', color: l.color, fontSize: '0.68rem' }} />)}
+                          {project.labels.length > 3 && <Chip label={'+' + (project.labels.length - 3)} size="small" variant="outlined" sx={{ fontSize: '0.68rem' }} />}
+                        </Stack>
+                      )}
+                      {project.task_count > 0 && (
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 100, flexShrink: 0 }}>
+                          <LinearProgress variant="determinate" value={project.progress_percent}
+                            sx={{ flex: 1, height: 6, borderRadius: 3, bgcolor: '#e0e0e0', '& .MuiLinearProgress-bar': { bgcolor: sc.color } }} />
+                          <Typography variant="caption" fontWeight={700} sx={{ minWidth: 30, textAlign: 'right' }}>{project.progress_percent}%</Typography>
+                        </Box>
+                      )}
+                      <Box onClick={e => e.stopPropagation()} sx={{ flexShrink: 0 }}>
+                        <IconButton size="small" onClick={() => { setEditingProject({ ...project, label_ids: project.labels?.map(l => l.id) || [] }); setProjectDialogOpen(true); }}><Edit fontSize="small" /></IconButton>
+                        <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'project', id: project.id }); setDeleteConfirmOpen(true); }}><Delete fontSize="small" /></IconButton>
+                      </Box>
+                    </Paper>
+                  );
+                })}
+                {laneProjects.length === 0 && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', height: 48, px: 1, opacity: 0.5, fontStyle: 'italic' }}>
+                    {isOver ? '↓ Přetáhnout sem' : 'Žádné projekty'}
+                  </Typography>
+                )}
+              </Stack>
+            </Box>
+          );
+        })}
+      </Box>
+    );
+  };
 
   // ======== OVERVIEW ========
   const renderOverview = () => (
@@ -567,53 +703,57 @@ export default function ProjectsDashboard() {
           )}
         </Stack>
       )}
-      <Stack spacing={1}>
-        {filteredProjects.map(project => {
-          const sc = STATUS_CFG[project.status] || STATUS_CFG.backlog;
-          return (
-            <Paper key={project.id}
-              sx={{ display: 'flex', alignItems: 'center', gap: 2, px: 2, py: 1.5, borderRadius: 2,
-                borderLeft: '4px solid ' + sc.color, cursor: 'pointer', transition: 'all 0.15s',
-                '&:hover': { boxShadow: 3, bgcolor: '#fafffe' } }}
-              onClick={() => openProject(project.id)}>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.25 }}>
-                  <Typography variant="subtitle1" fontWeight={700} noWrap>{project.name}</Typography>
-                  {project.docs_repo && <MenuBook sx={{ fontSize: 16, color: '#1565c0' }} />}
-                </Box>
-                {project.description && (
-                  <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 500 }}>{project.description}</Typography>
-                )}
-              </Box>
-              <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
-                {sChip(project.status, STATUS_CFG)} {pChip(project.priority)}
-                {project.task_count > 0 && <Chip label={project.task_count + ' úkolů'} size="small" variant="outlined" />}
-              </Stack>
-              {project.labels?.length > 0 && (
-                <Stack direction="row" spacing={0.5} flexShrink={0}>
-                  {project.labels.slice(0, 3).map(l => <Chip key={l.id} label={l.name} size="small" sx={{ bgcolor: l.color + '22', color: l.color, fontSize: '0.68rem' }} />)}
-                  {project.labels.length > 3 && <Chip label={'+' + (project.labels.length - 3)} size="small" variant="outlined" sx={{ fontSize: '0.68rem' }} />}
-                </Stack>
-              )}
-              {project.task_count > 0 && (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 100, flexShrink: 0 }}>
-                  <LinearProgress variant="determinate" value={project.progress_percent}
-                    sx={{ flex: 1, height: 6, borderRadius: 3, bgcolor: '#e0e0e0', '& .MuiLinearProgress-bar': { bgcolor: sc.color } }} />
-                  <Typography variant="caption" fontWeight={700} sx={{ minWidth: 30, textAlign: 'right' }}>{project.progress_percent}%</Typography>
-                </Box>
-              )}
-              <Box onClick={e => e.stopPropagation()} sx={{ flexShrink: 0 }}>
-                <IconButton size="small" onClick={() => { setEditingProject({ ...project, label_ids: project.labels?.map(l => l.id) || [] }); setProjectDialogOpen(true); }}><Edit fontSize="small" /></IconButton>
-                <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'project', id: project.id }); setDeleteConfirmOpen(true); }}><Delete fontSize="small" /></IconButton>
-              </Box>
+      {(sortBy === 'status' || sortBy === 'priority') ? renderProjectSwimlane(sortBy) : (
+        <>
+          <Stack spacing={1}>
+            {filteredProjects.map(project => {
+              const sc = STATUS_CFG[project.status] || STATUS_CFG.backlog;
+              return (
+                <Paper key={project.id}
+                  sx={{ display: 'flex', alignItems: 'center', gap: 2, px: 2, py: 1.5, borderRadius: 2,
+                    borderLeft: '4px solid ' + sc.color, cursor: 'pointer', transition: 'all 0.15s',
+                    '&:hover': { boxShadow: 3, bgcolor: '#fafffe' } }}
+                  onClick={() => openProject(project.id)}>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.25 }}>
+                      <Typography variant="subtitle1" fontWeight={700} noWrap>{project.name}</Typography>
+                      {project.docs_repo && <MenuBook sx={{ fontSize: 16, color: '#1565c0' }} />}
+                    </Box>
+                    {project.description && (
+                      <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 500 }}>{project.description}</Typography>
+                    )}
+                  </Box>
+                  <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
+                    {sChip(project.status, STATUS_CFG)} {pChip(project.priority)}
+                    {project.task_count > 0 && <Chip label={project.task_count + ' úkolů'} size="small" variant="outlined" />}
+                  </Stack>
+                  {project.labels?.length > 0 && (
+                    <Stack direction="row" spacing={0.5} flexShrink={0}>
+                      {project.labels.slice(0, 3).map(l => <Chip key={l.id} label={l.name} size="small" sx={{ bgcolor: l.color + '22', color: l.color, fontSize: '0.68rem' }} />)}
+                      {project.labels.length > 3 && <Chip label={'+' + (project.labels.length - 3)} size="small" variant="outlined" sx={{ fontSize: '0.68rem' }} />}
+                    </Stack>
+                  )}
+                  {project.task_count > 0 && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 100, flexShrink: 0 }}>
+                      <LinearProgress variant="determinate" value={project.progress_percent}
+                        sx={{ flex: 1, height: 6, borderRadius: 3, bgcolor: '#e0e0e0', '& .MuiLinearProgress-bar': { bgcolor: sc.color } }} />
+                      <Typography variant="caption" fontWeight={700} sx={{ minWidth: 30, textAlign: 'right' }}>{project.progress_percent}%</Typography>
+                    </Box>
+                  )}
+                  <Box onClick={e => e.stopPropagation()} sx={{ flexShrink: 0 }}>
+                    <IconButton size="small" onClick={() => { setEditingProject({ ...project, label_ids: project.labels?.map(l => l.id) || [] }); setProjectDialogOpen(true); }}><Edit fontSize="small" /></IconButton>
+                    <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'project', id: project.id }); setDeleteConfirmOpen(true); }}><Delete fontSize="small" /></IconButton>
+                  </Box>
+                </Paper>
+              );
+            })}
+          </Stack>
+          {filteredProjects.length === 0 && !loading && (
+            <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 2, bgcolor: '#fafafa', mt: 2 }}>
+              <Typography color="text.secondary">Žádné projekty. Vytvořte první projekt!</Typography>
             </Paper>
-          );
-        })}
-      </Stack>
-      {filteredProjects.length === 0 && !loading && (
-        <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 2, bgcolor: '#fafafa', mt: 2 }}>
-          <Typography color="text.secondary">Žádné projekty. Vytvořte první projekt!</Typography>
-        </Paper>
+          )}
+        </>
       )}
     </Box>
   );
@@ -677,7 +817,9 @@ export default function ProjectsDashboard() {
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       {pChip(sub.priority)}
                       <Box sx={{ ml: 'auto' }}>
-                        <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(sub); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                        <Tooltip title="Náhled"><IconButton size="small" sx={{ p: 0.25, color: '#1565c0' }} onClick={e => { e.stopPropagation(); setPreviewTask(sub); }}><InfoOutlined sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                        <Tooltip title="Duplikovat"><IconButton size="small" sx={{ p: 0.25, color: '#7b1fa2' }} onClick={e => { e.stopPropagation(); openDuplicateDialog(sub); }}><ContentCopy sx={{ fontSize: 14 }} /></IconButton></Tooltip>
+                        <IconButton size="small" sx={{ p: 0.25, color: '#e65100' }} onClick={e => { e.stopPropagation(); openTaskDialog(sub); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
                         <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: sub.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
                       </Box>
                     </Stack>
@@ -754,7 +896,9 @@ export default function ProjectsDashboard() {
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       {pChip(sub.priority)}
                       <Box sx={{ ml: 'auto' }}>
-                        <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(sub); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
+                        <Tooltip title="Náhled"><IconButton size="small" sx={{ p: 0.25, color: '#1565c0' }} onClick={e => { e.stopPropagation(); setPreviewTask(sub); }}><InfoOutlined sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                        <Tooltip title="Duplikovat"><IconButton size="small" sx={{ p: 0.25, color: '#7b1fa2' }} onClick={e => { e.stopPropagation(); openDuplicateDialog(sub); }}><ContentCopy sx={{ fontSize: 14 }} /></IconButton></Tooltip>
+                        <IconButton size="small" sx={{ p: 0.25, color: '#e65100' }} onClick={e => { e.stopPropagation(); openTaskDialog(sub); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
                         <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: sub.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
                       </Box>
                     </Stack>
@@ -866,18 +1010,34 @@ export default function ProjectsDashboard() {
                 ))}
               </Stack>
             )}
+            {/* Action toolbar below title */}
+            <Stack direction="row" spacing={0.25} alignItems="center" sx={{ mt: 0.75 }}>
+              <Tooltip title="Náhled">
+                <IconButton size="small" sx={{ p: 0.25, color: '#1565c0' }} onClick={() => setPreviewTask(task)}><InfoOutlined sx={{ fontSize: 16 }} /></IconButton>
+              </Tooltip>
+              <Tooltip title="Přidat pod-úkol">
+                <IconButton size="small" sx={{ p: 0.25, color: COLORS.emerald }} onClick={() => openTaskDialog(null, task.id)}><Add sx={{ fontSize: 16 }} /></IconButton>
+              </Tooltip>
+              <Tooltip title="Duplikovat">
+                <IconButton size="small" sx={{ p: 0.25, color: '#7b1fa2' }} onClick={() => openDuplicateDialog(task)}><ContentCopy sx={{ fontSize: 16 }} /></IconButton>
+              </Tooltip>
+              <Tooltip title="Upravit">
+                <IconButton size="small" sx={{ p: 0.25, color: '#e65100' }} onClick={() => openTaskDialog(task)}><Edit sx={{ fontSize: 16 }} /></IconButton>
+              </Tooltip>
+              <Tooltip title="Smazat">
+                <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={() => { setDeleteTarget({ type: 'task', id: task.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 16 }} /></IconButton>
+              </Tooltip>
+            </Stack>
           </Box>
-          <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
-            {renderSubtaskIndicator(subs)}
-            {sChip(task.status, TASK_CFG)} {pChip(task.priority)}
-            {(task.comments?.length || 0) > 0 && (
-              <Badge badgeContent={task.comments?.length} color="primary"><Comment fontSize="small" color="action" /></Badge>
-            )}
-            <Tooltip title="Přidat pod-úkol">
-              <IconButton size="small" onClick={() => openTaskDialog(null, task.id)}><Add fontSize="small" /></IconButton>
-            </Tooltip>
-            <IconButton size="small" onClick={() => openTaskDialog(task)}><Edit fontSize="small" /></IconButton>
-            <IconButton size="small" color="error" onClick={() => { setDeleteTarget({ type: 'task', id: task.id }); setDeleteConfirmOpen(true); }}><Delete fontSize="small" /></IconButton>
+          {/* Right side: status/priority + subtask indicators (separated) */}
+          <Stack direction="column" alignItems="flex-end" spacing={0.5} flexShrink={0}>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              {sChip(task.status, TASK_CFG)} {pChip(task.priority)}
+              {(task.comments?.length || 0) > 0 && (
+                <Badge badgeContent={task.comments?.length} color="primary"><Comment fontSize="small" color="action" /></Badge>
+              )}
+            </Stack>
+            {subs.length > 0 && renderSubtaskIndicator(subs)}
           </Stack>
         </Paper>
         {subs.length > 0 && (
@@ -942,15 +1102,19 @@ export default function ProjectsDashboard() {
                         transition: 'opacity 0.2s, transform 0.2s, border 0.15s',
                         outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 3 } }}>
                       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                          <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
-                          <Box sx={{ flexShrink: 0 }}>
-                            <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
-                            <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: t.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
-                          </Box>
-                        </Box>
+                        <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>{t.title}</Typography>
+                        {/* Management icons row */}
+                        <Stack direction="row" spacing={0.25} alignItems="center" sx={{ mb: 0.75 }}>
+                        <Tooltip title="Náhled"><IconButton size="small" sx={{ p: 0.25, color: '#1565c0' }} onClick={e => { e.stopPropagation(); setPreviewTask(t as Task); }}><InfoOutlined sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                          <Tooltip title="Duplikovat"><IconButton size="small" sx={{ p: 0.25, color: '#7b1fa2' }} onClick={e => { e.stopPropagation(); openDuplicateDialog(t as Task); }}><ContentCopy sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                          <Tooltip title="Upravit"><IconButton size="small" sx={{ p: 0.25, color: '#e65100' }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                          <Tooltip title="Smazat"><IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: t.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                        </Stack>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                          {renderSubtaskIndicator(subs)}
+                          {subs.length > 0 && renderSubtaskIndicator(subs)}
+                        </Stack>
+                        {(subs.length > 0 || phB.length > 0) && <Box sx={{ my: 0.5, height: 1, bgcolor: '#e0e0e0' }} />}
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
                           {phB.map(pb => (
                             <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
@@ -1041,15 +1205,19 @@ export default function ProjectsDashboard() {
                         transition: 'opacity 0.2s, transform 0.2s, border 0.15s',
                         outline: isExp ? '2px solid ' + COLORS.emerald : 'none', '&:hover': { boxShadow: 2 } }}>
                       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                          <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, flex: 1 }}>{t.title}</Typography>
-                          <Box sx={{ flexShrink: 0 }}>
-                            <IconButton size="small" sx={{ p: 0.25 }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 14 }} /></IconButton>
-                            <IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: t.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 14 }} /></IconButton>
-                          </Box>
-                        </Box>
+                        <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>{t.title}</Typography>
+                        {/* Management icons row */}
+                        <Stack direction="row" spacing={0.25} alignItems="center" sx={{ mb: 0.75 }}>
+                        <Tooltip title="Náhled"><IconButton size="small" sx={{ p: 0.25, color: '#1565c0' }} onClick={e => { e.stopPropagation(); setPreviewTask(t as Task); }}><InfoOutlined sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                          <Tooltip title="Duplikovat"><IconButton size="small" sx={{ p: 0.25, color: '#7b1fa2' }} onClick={e => { e.stopPropagation(); openDuplicateDialog(t as Task); }}><ContentCopy sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                          <Tooltip title="Upravit"><IconButton size="small" sx={{ p: 0.25, color: '#e65100' }} onClick={e => { e.stopPropagation(); openTaskDialog(t); }}><Edit sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                          <Tooltip title="Smazat"><IconButton size="small" sx={{ p: 0.25 }} color="error" onClick={e => { e.stopPropagation(); setDeleteTarget({ type: 'task', id: t.id }); setDeleteConfirmOpen(true); }}><Delete sx={{ fontSize: 13 }} /></IconButton></Tooltip>
+                        </Stack>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                          {renderSubtaskIndicator(subs)}
+                          {subs.length > 0 && renderSubtaskIndicator(subs)}
+                        </Stack>
+                        {(subs.length > 0 || phB.length > 0) && <Box sx={{ my: 0.5, height: 1, bgcolor: '#e0e0e0' }} />}
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                           {pChip(t.priority)}
                           {phB.map(pb => (
                             <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
@@ -1290,7 +1458,9 @@ export default function ProjectsDashboard() {
 
   // ======== TASK DIALOG ========
   const isEdit = !!(editingTask?.id);
-  const dialogTitle = isEdit ? 'Upravit' : (parentForNewTask ? 'Nový pod-úkol' : 'Nový úkol');
+  const dialogTitle = isDuplicating
+    ? (parentForNewTask !== null ? 'Duplikovat pod-úkol' : 'Duplikovat úkol')
+    : isEdit ? 'Upravit' : (parentForNewTask ? 'Nový pod-úkol' : 'Nový úkol');
 
   // ======== MAIN RENDER ========
   if (loading) return <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}><CircularProgress /></Box>;
@@ -1358,7 +1528,7 @@ export default function ProjectsDashboard() {
       </Dialog>
 
       {/* Task dialog */}
-      <Dialog open={taskDialogOpen} onClose={() => { setTaskDialogOpen(false); setParentForNewTask(null); }} maxWidth="md" fullWidth>
+      <Dialog open={taskDialogOpen} onClose={() => { setTaskDialogOpen(false); setParentForNewTask(null); setIsDuplicating(false); setCopySubtasks(false); setDuplicateSourceSubtasks([]); }} maxWidth="md" fullWidth>
         <DialogTitle>{dialogTitle}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -1386,6 +1556,13 @@ export default function ProjectsDashboard() {
               <TextField label="Termín" type="date" fullWidth InputLabelProps={{ shrink: true }} value={editingTask?.due_date || ''}
                 onChange={e => setEditingTask(p => p ? { ...p, due_date: e.target.value || null } : p)} />
             </Stack>
+
+            {isDuplicating && duplicateSourceSubtasks.length > 0 && (
+              <FormControlLabel
+                control={<Checkbox checked={copySubtasks} onChange={e => setCopySubtasks(e.target.checked)} />}
+                label={<Typography variant="body2">Kopírovat i pod-úkoly ({duplicateSourceSubtasks.length} ks)</Typography>}
+              />
+            )}
 
             {editingTask?.id && (
               <>
@@ -1474,7 +1651,7 @@ export default function ProjectsDashboard() {
             </Button>
           )}
           <Box>
-            <Button onClick={() => { setTaskDialogOpen(false); setParentForNewTask(null); }} sx={{ mr: 1 }}>Zrušit</Button>
+            <Button onClick={() => { setTaskDialogOpen(false); setParentForNewTask(null); setIsDuplicating(false); setCopySubtasks(false); setDuplicateSourceSubtasks([]); }} sx={{ mr: 1 }}>Zrušit</Button>
             <Button variant="contained" onClick={handleSaveTask}>{editingTask?.id ? 'Uložit' : 'Vytvořit'}</Button>
           </Box>
         </DialogActions>
@@ -1506,6 +1683,67 @@ export default function ProjectsDashboard() {
         <DialogActions>
           <Button onClick={() => setDeleteConfirmOpen(false)}>Zrušit</Button>
           <Button variant="contained" color="error" onClick={handleDelete}>Smazat</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Task preview dialog */}
+      <Dialog open={!!previewTask} onClose={() => setPreviewTask(null)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pb: 1 }}>
+          <InfoOutlined sx={{ color: COLORS.emerald }} />
+          <Typography variant="h6" sx={{ flex: 1 }}>{previewTask?.title}</Typography>
+        </DialogTitle>
+        <DialogContent>
+          {previewTask?.description && (
+            <Box sx={{ mb: 2, p: 1.5, bgcolor: '#fafafa', borderRadius: 1, border: '1px solid #e0e0e0', position: 'relative' }}>
+              <Tooltip title="Kopírovat popis">
+                <IconButton size="small" sx={{ position: 'absolute', top: 6, right: 6, color: '#7b1fa2' }}
+                  onClick={() => { navigator.clipboard.writeText(previewTask.description || ''); showSnack('Popis zkopírován'); }}>
+                  <ContentCopy sx={{ fontSize: 15 }} />
+                </IconButton>
+              </Tooltip>
+              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.85rem', pr: 3 }}>{previewTask.description}</Typography>
+            </Box>
+          )}
+          {(previewTask?.comments?.length || 0) > 0 && (
+            <>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
+                <Comment fontSize="small" /> Komentáře ({previewTask!.comments.length})
+              </Typography>
+              <Box sx={{ maxHeight: 200, overflowY: 'auto', bgcolor: '#fafafa', borderRadius: 1, p: 1, mb: 2 }}>
+                {previewTask!.comments.map((c: any) => (
+                  <Box key={c.id} sx={{ mb: 1, p: 1, bgcolor: '#fff', borderRadius: 1, border: '1px solid #f0f0f0' }}>
+                    <Typography variant="caption" fontWeight={600}>{c.author}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>{c.created_at ? new Date(c.created_at).toLocaleString('cs-CZ') : ''}</Typography>
+                    <Typography variant="body2" sx={{ mt: 0.25 }}>{c.content}</Typography>
+                  </Box>
+                ))}
+              </Box>
+            </>
+          )}
+          {(previewTask?.notes?.length || 0) > 0 && (
+            <>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
+                <StickyNote2 fontSize="small" /> Poznámky ({previewTask!.notes.length})
+              </Typography>
+              <Box sx={{ maxHeight: 200, overflowY: 'auto', bgcolor: '#fafafa', borderRadius: 1, p: 1 }}>
+                {previewTask!.notes.map((n: TaskNote) => {
+                  const bc: Record<string, string> = { bug: '#c62828', note: '#1565c0', idea: '#ff9800' };
+                  return (
+                    <Box key={n.id} sx={{ mb: 1, p: 1, bgcolor: '#fff', borderRadius: 1, borderLeft: '3px solid ' + (bc[n.note_type] || '#999') }}>
+                      <Typography variant="body2" sx={{ opacity: n.resolved ? 0.5 : 1, textDecoration: n.resolved ? 'line-through' : 'none' }}>{n.content}</Typography>
+                    </Box>
+                  );
+                })}
+              </Box>
+            </>
+          )}
+          {!previewTask?.description && !previewTask?.comments?.length && !previewTask?.notes?.length && (
+            <Typography color="text.secondary" variant="body2" sx={{ py: 2, textAlign: 'center' }}>Žádné podrobnosti.</Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setPreviewTask(null); openTaskDialog(previewTask!); }}>Upravit</Button>
+          <Button variant="contained" onClick={() => setPreviewTask(null)}>Zavřít</Button>
         </DialogActions>
       </Dialog>
 
