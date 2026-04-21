@@ -1695,16 +1695,21 @@ export default function ProjectsDashboard() {
                 <IconButton size="small" sx={{ position: 'absolute', top: 6, right: 6, color: '#7b1fa2' }}
                   onClick={() => {
                     const text = previewTask.description || '';
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                      navigator.clipboard.writeText(text).then(() => showSnack('Popis zkopírován')).catch(() => {
-                        const el = document.createElement('textarea'); el.value = text;
-                        document.body.appendChild(el); el.select(); document.execCommand('copy');
-                        document.body.removeChild(el); showSnack('Popis zkopírován');
-                      });
+                    const copyViaExec = () => {
+                      const el = document.createElement('textarea');
+                      el.value = text;
+                      el.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+                      document.body.appendChild(el);
+                      el.focus();
+                      el.select();
+                      document.execCommand('copy');
+                      document.body.removeChild(el);
+                      showSnack('Popis zkopírován');
+                    };
+                    if (navigator.clipboard && window.isSecureContext) {
+                      navigator.clipboard.writeText(text).then(() => showSnack('Popis zkopírován')).catch(copyViaExec);
                     } else {
-                      const el = document.createElement('textarea'); el.value = text;
-                      document.body.appendChild(el); el.select(); document.execCommand('copy');
-                      document.body.removeChild(el); showSnack('Popis zkopírován');
+                      copyViaExec();
                     }
                   }}>
                   <ContentCopy sx={{ fontSize: 15 }} />
