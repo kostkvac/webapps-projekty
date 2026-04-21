@@ -792,11 +792,38 @@ export default function ProjectsDashboard() {
     return result;
   };
 
+  const renderSubtaskIndicator = (subs: Task[]) => {
+    const total = subs.length;
+    const done = subs.filter(s => s.status === 'done').length;
+    const open = Math.max(total - done, 0);
+    return (
+      <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexWrap: 'wrap' }}>
+        <Chip
+          size="small"
+          icon={<SubdirectoryArrowRight sx={{ fontSize: 13 }} />}
+          label={total}
+          sx={{ height: 20, fontSize: '0.68rem', bgcolor: '#f5f5f5', '& .MuiChip-label': { px: 0.5 } }}
+        />
+        <Chip
+          size="small"
+          icon={<Done sx={{ fontSize: 13 }} />}
+          label={done}
+          sx={{ height: 20, fontSize: '0.68rem', color: '#2e7d32', bgcolor: '#e8f5e9', '& .MuiChip-label': { px: 0.5 } }}
+        />
+        <Chip
+          size="small"
+          icon={<PlayArrow sx={{ fontSize: 13 }} />}
+          label={open}
+          sx={{ height: 20, fontSize: '0.68rem', color: '#e65100', bgcolor: '#fff3e0', '& .MuiChip-label': { px: 0.5 } }}
+        />
+      </Stack>
+    );
+  };
+
   // ======== ÚKOL ROW ========
   const renderUkolRow = (task: Task) => {
     const subs = task.subtasks || [];
     const isExp = expandedUkoly.has(task.id);
-    const doneCount = subs.filter(s => s.status === 'done').length;
     const tc = TASK_CFG[task.status] || TASK_CFG.backlog;
     const phBreakdown = getPhaseBreakdown(subs);
     return (
@@ -841,6 +868,7 @@ export default function ProjectsDashboard() {
             )}
           </Box>
           <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
+            {renderSubtaskIndicator(subs)}
             {sChip(task.status, TASK_CFG)} {pChip(task.priority)}
             {(task.comments?.length || 0) > 0 && (
               <Badge badgeContent={task.comments?.length} color="primary"><Comment fontSize="small" color="action" /></Badge>
@@ -922,6 +950,7 @@ export default function ProjectsDashboard() {
                           </Box>
                         </Box>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                          {renderSubtaskIndicator(subs)}
                           {pChip(t.priority)}
                           {phB.map(pb => (
                             <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
@@ -1020,6 +1049,7 @@ export default function ProjectsDashboard() {
                           </Box>
                         </Box>
                         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                          {renderSubtaskIndicator(subs)}
                           {pChip(t.priority)}
                           {phB.map(pb => (
                             <Chip key={pb.phase.number} label={`F${pb.phase.number}:${pb.doneCount}/${pb.count}`} size="small"
