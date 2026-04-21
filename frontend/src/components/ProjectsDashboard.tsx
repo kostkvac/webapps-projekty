@@ -944,22 +944,18 @@ export default function ProjectsDashboard() {
       <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexWrap: 'wrap' }}>
         <Chip
           size="small"
-          icon={<SubdirectoryArrowRight sx={{ fontSize: 13 }} />}
-          label={total}
-          sx={{ height: 20, fontSize: '0.68rem', bgcolor: '#f5f5f5', '& .MuiChip-label': { px: 0.5 } }}
-        />
-        <Chip
-          size="small"
           icon={<Done sx={{ fontSize: 13 }} />}
           label={done}
           sx={{ height: 20, fontSize: '0.68rem', color: '#2e7d32', bgcolor: '#e8f5e9', '& .MuiChip-label': { px: 0.5 } }}
         />
-        <Chip
-          size="small"
-          icon={<PlayArrow sx={{ fontSize: 13 }} />}
-          label={open}
-          sx={{ height: 20, fontSize: '0.68rem', color: '#e65100', bgcolor: '#fff3e0', '& .MuiChip-label': { px: 0.5 } }}
-        />
+        {open > 0 && (
+          <Chip
+            size="small"
+            icon={<PlayArrow sx={{ fontSize: 13 }} />}
+            label={open}
+            sx={{ height: 20, fontSize: '0.68rem', color: '#e65100', bgcolor: '#fff3e0', '& .MuiChip-label': { px: 0.5 } }}
+          />
+        )}
       </Stack>
     );
   };
@@ -1697,7 +1693,20 @@ export default function ProjectsDashboard() {
             <Box sx={{ mb: 2, p: 1.5, bgcolor: '#fafafa', borderRadius: 1, border: '1px solid #e0e0e0', position: 'relative' }}>
               <Tooltip title="Kopírovat popis">
                 <IconButton size="small" sx={{ position: 'absolute', top: 6, right: 6, color: '#7b1fa2' }}
-                  onClick={() => { navigator.clipboard.writeText(previewTask.description || ''); showSnack('Popis zkopírován'); }}>
+                  onClick={() => {
+                    const text = previewTask.description || '';
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                      navigator.clipboard.writeText(text).then(() => showSnack('Popis zkopírován')).catch(() => {
+                        const el = document.createElement('textarea'); el.value = text;
+                        document.body.appendChild(el); el.select(); document.execCommand('copy');
+                        document.body.removeChild(el); showSnack('Popis zkopírován');
+                      });
+                    } else {
+                      const el = document.createElement('textarea'); el.value = text;
+                      document.body.appendChild(el); el.select(); document.execCommand('copy');
+                      document.body.removeChild(el); showSnack('Popis zkopírován');
+                    }
+                  }}>
                   <ContentCopy sx={{ fontSize: 15 }} />
                 </IconButton>
               </Tooltip>
